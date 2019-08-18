@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
-use nom::Err;
-use nom::error::{VerboseError, convert_error};
+//use nom::Err;
+//use nom::error::{VerboseError, convert_error};
 
 //fn test_binary(i: &str) {
 //    let p = binary::<VerboseError<&str>>();
@@ -22,31 +22,31 @@ use nom::error::{VerboseError, convert_error};
 //}
 
 fn main() {
-//    let l = Rc::new(List::Nil);
-//    let ll = Rc::new(List::Cons(
-//        Rc::new(1),
-//        Rc::new(List::Cons(
-//            Rc::new(2),
-//            l.clone()
-//        ))
-//    ));
-//    println!("{}", ll);
-//    println!("{:?}", ll);
-//
-//    println!("{}", Keyword::QUASIQUOTE);
-//    println!("{}", Keyword::UNQUOTESPLICING);
-//    println!("{}", Keyword::LETSTAR);
-//    println!("{}", Keyword::LETREC);
-//    println!("{}", Keyword::IF);
-//    println!("{}", Keyword::DO);
+    //    let l = Rc::new(List::Nil);
+    //    let ll = Rc::new(List::Cons(
+    //        Rc::new(1),
+    //        Rc::new(List::Cons(
+    //            Rc::new(2),
+    //            l.clone()
+    //        ))
+    //    ));
+    //    println!("{}", ll);
+    //    println!("{:?}", ll);
+    //
+    //    println!("{}", Keyword::QUASIQUOTE);
+    //    println!("{}", Keyword::UNQUOTESPLICING);
+    //    println!("{}", Keyword::LETSTAR);
+    //    println!("{}", Keyword::LETREC);
+    //    println!("{}", Keyword::IF);
+    //    println!("{}", Keyword::DO);
 
-//    test_binary("#b011");
-//    test_binary("#b2");
-//    test_binary("#b-011");
-//    test_binary("#b-012");
-    
-//    test_decimal("#d12");
-//    test_decimal("#d-12");
-//    test_decimal("+12");
-//    test_decimal("#d+12");
+    //    test_binary("#b011");
+    //    test_binary("#b2");
+    //    test_binary("#b-011");
+    //    test_binary("#b-012");
+
+    //    test_decimal("#d12");
+    //    test_decimal("#d-12");
+    //    test_decimal("+12");
+    //    test_decimal("#d+12");
 }
