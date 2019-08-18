@@ -1,0 +1,2 @@
+[build]
+rustflags = ["-g", "-A", "unused", "-A", "non_camel_case_types"]
