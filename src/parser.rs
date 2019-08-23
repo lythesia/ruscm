@@ -13,13 +13,12 @@ use crate::lexer::{Token, Position, Lexer};
 #[derive(Debug)]
 pub enum AstNode {
     // simple values
-    Symbol(String), // symbol can refer to: 1. variable identifier; 2. keyword symbols like {quote, unquote}
+    Symbol(String),
     Boolean(bool),
     Integer(i64),
     Float(f64),
     Character(char),
     String(String),
-    Keyword(Keyword),
     // complex values
     List(List<AstNode>),
 }
@@ -33,7 +32,6 @@ impl Display for AstNode {
             AstNode::Float(v) => write!(f, "{}", v),
             AstNode::Character(v) => write!(f, "'{}'", v),
             AstNode::String(ref v) => write!(f, "\"{}\"", v),
-            AstNode::Keyword(ref v) => write!(f, "{}", v),
             AstNode::List(ref v) => write!(f, "{}", v),
         }
     }
@@ -41,43 +39,42 @@ impl Display for AstNode {
 
 // TODO: some keywords need to be SPECIAL-FORMS?
 // note with ! can be implement by library macros
-#[derive(Debug, Display, Eq, PartialEq)]
-#[derive(EnumString)]
-#[strum(serialize_all = "mixed_case")]
-pub enum Keyword {
-    // expression keyword (which whole s-exp gives an value)
-    QUOTE,
-    LAMBDA,
-    IF,
-    ELSE,
-    #[strum(serialize = "set!")]
-    SETB,
-    BEGIN,
-//    COND, !
-//    AND, !
-//    OR, !
-//    CASE, !
-//    LET, !
-//    LETSTAR, !
-//    LETREC, !
-//    DO, !
-//    DELAY, !
-    QUASIQUOTE,
-    // other syntactic keyword
-    #[strum(serialize = "=>")]
-    TO,
-    DEFINE,
-    UNQUOTE,
-    #[strum(serialize = "unquote-splicing")]
-    UNQUOTE_SPLICING,
-    #[strum(serialize = ".")]
-    DOT,
-    #[strum(serialize = "...")]
-    ELLIPSIS,
-    // TODO
-    // define-syntax,
-    // syntax-rules,
-}
+//#[derive(Debug, Display, Eq, PartialEq)]
+//#[derive(EnumString)]
+//#[strum(serialize_all = "mixed_case")]
+//pub enum Keyword {
+//    // expression keyword (which whole s-exp gives an value)
+//    QUOTE,
+//    LAMBDA,
+//    IF,
+//    ELSE,
+//    #[strum(serialize = "set!")]
+//    SET,
+//    BEGIN,
+////    COND, !
+////    AND, !
+////    OR, !
+////    CASE, !
+////    LET, !
+////    LETSTAR, !
+////    LETREC, !
+////    DO, !
+////    DELAY, !
+//    QUASIQUOTE,
+//    // other syntactic keyword
+//    DEFINE,
+//    UNQUOTE,
+//    #[strum(serialize = "unquote-splicing")]
+//    UNQUOTE_SPLICING,
+//    #[strum(serialize = ".")]
+//    DOT,
+//    #[strum(serialize = "...")]
+//    ELLIPSIS,
+//    #[strum(serialize = "define-syntax")]
+//    DEFINE_SYNTAX,
+//    #[strum(serialize = "syntax-rules")]
+//    SYNTAX_RULES,
+//}
 
 pub struct ParseError {
     msg: String,
@@ -106,7 +103,7 @@ macro_rules! parse_error {
     )
 }
 
-struct Parser<'a> {
+pub struct Parser<'a> {
     tokens: slice::Iter<'a, (Token, Position)>,
 }
 
@@ -136,23 +133,13 @@ impl<'a> Parser<'a> {
                         }
                     },
                     Token::DOT => {
-                        Ok(Some(AstNode::Keyword(Keyword::DOT)))
+                        Ok(Some(AstNode::Symbol(".".to_string())))
                     },
                     Token::ELLIPSIS => {
-                        Ok(Some(AstNode::Keyword(Keyword::ELLIPSIS)))
+                        Ok(Some(AstNode::Symbol("...".to_string())))
                     },
                     Token::IDENTIFIER(ref v) => {
-                        match Keyword::from_str(v.as_str()) {
-                            // keyword
-                            Ok(kw) => Ok(Some(AstNode::Keyword(kw))),
-                            // or symbol
-                            _ => {
-                                match v.as_str() {
-                                    "λ" => Ok(Some(AstNode::Keyword(Keyword::LAMBDA))),
-                                    _ => Ok(Some(AstNode::Symbol(v.clone()))),
-                                }
-                            }
-                        }
+                        Ok(Some(AstNode::Symbol(v.clone())))
                     },
                     Token::VEC_LPAREN => {
                         let v = AstNode::Symbol("vec".to_string());
@@ -182,7 +169,7 @@ impl<'a> Parser<'a> {
                     Token::QUOTE => {
                         match self.parse_tree_node(depth)? {
                             Some(inner) => {
-                                let quoted: List<AstNode> = list!(AstNode::Keyword(Keyword::QUOTE), inner);
+                                let quoted: List<AstNode> = list!(AstNode::Symbol("quote".to_string()), inner);
                                 Ok(Some(AstNode::List(quoted)))
                             },
                             _ => {
@@ -193,7 +180,7 @@ impl<'a> Parser<'a> {
                     Token::UNQUOTE => {
                         match self.parse_tree_node(depth)? {
                             Some(inner) => {
-                                let unquoted: List<AstNode> = list!(AstNode::Keyword(Keyword::UNQUOTE), inner);
+                                let unquoted: List<AstNode> = list!(AstNode::Symbol("unquote".to_string()), inner);
                                 Ok(Some(AstNode::List(unquoted)))
                             },
                             _ => {
@@ -204,7 +191,7 @@ impl<'a> Parser<'a> {
                     Token::QUASIQUOTE => {
                         match self.parse_tree_node(depth)? {
                             Some(inner) => {
-                                let quoted: List<AstNode> = list!(AstNode::Keyword(Keyword::QUASIQUOTE), inner);
+                                let quoted: List<AstNode> = list!(AstNode::Symbol("quasiquote".to_string()), inner);
                                 Ok(Some(AstNode::List(quoted)))
                             },
                             _ => {
@@ -215,7 +202,7 @@ impl<'a> Parser<'a> {
                     Token::UNQUOTE_SPLICING => {
                         match self.parse_tree_node(depth)? {
                             Some(inner) => {
-                                let unquoted: List<AstNode> = list!(AstNode::Keyword(Keyword::UNQUOTE_SPLICING), inner);
+                                let unquoted: List<AstNode> = list!(AstNode::Symbol("unquote-splicing".to_string()), inner);
                                 Ok(Some(AstNode::List(unquoted)))
                             },
                             _ => {
@@ -255,13 +242,14 @@ impl<'a> Parser<'a> {
     }
     
     // Vec <=> s-exp*
-    pub fn parse(tokens: &Vec<(Token, Position)>) -> Result<Vec<AstNode>, ParseError> {
+    pub fn parse(tokens: &Vec<(Token, Position)>) -> Result<List<AstNode>, ParseError> {
         let mut parser = Parser { tokens: tokens.iter() };
-        let mut v: Vec<AstNode> = Vec::new();
+        let mut v: Vec<Rc<AstNode>> = Vec::new();
         while let Some(node) = parser.parse_tree_node(0)? {
-            v.push(node);
+            v.push(Rc::new(node));
         }
-        Ok(v)
+        let a = v.into_iter().collect::<List<AstNode>>();
+        Ok(a)
     }
 }
 
@@ -281,11 +269,6 @@ mod tests {
         let mut i2 = l2.iter();
         assert_eq!(i2.next(), Some(&2));
         assert_eq!(i2.next(), Some(&3));
-    }
-    
-    #[test]
-    fn test_enum_from_str() {
-        assert_eq!(Keyword::TO, Keyword::from_str("=>").unwrap());
     }
     
     #[test]
@@ -329,9 +312,41 @@ mod tests {
         let tokens = Lexer::tokenize(prog).unwrap();
         let tree = Parser::parse(&tokens);
         assert!(tree.is_ok());
-        for i in tree.unwrap() {
+        let t = tree.unwrap();
+        println!("{}", t);
+        println!("----");
+        for i in t.iter() {
             println!("{:?}", i);
             println!("{}", i);
+        }
+    }
+    
+    #[test]
+    fn test_ast_tree_op() {
+        let s = "(lambda () a)";
+        let tokens = Lexer::tokenize(s).unwrap();
+        let tree = Parser::parse(&tokens);
+        assert!(tree.is_ok());
+        let tree = tree.unwrap();
+        let t = tree.unpack1().unwrap();
+        // TODO: extract AstNode::List is struggling, fix it!
+        match *t {
+            AstNode::List(ref l) => {
+//                match *l {
+//                    List::Cons(ref x, ref y) => {
+//                        println!("x: {:?}", x);
+//                        let (a, b) = List::shift(y.clone()).unwrap();
+//                        println!("a: {:?}", a);
+//                        println!("b: {:?}", b);
+//                        // b is List, so body as cdr of tree is always list
+//                    },
+//                    _ => {},
+//                }
+                let(_, y) = l.shift().unwrap();
+                let (_, b) = y.shift().unwrap();
+                println!("b: {:?}", b);
+            },
+            _ => {},
         }
     }
 }

@@ -3,6 +3,8 @@ use std::rc::Rc;
 use std::fmt;
 use std::iter;
 
+use crate::interpreter::RuntimeError;
+
 pub struct PeekWhile<'a, I, F>
 where
     I: Iterator + 'a,
@@ -41,6 +43,15 @@ where
     PeekWhile { iter, f }
 }
 
+macro_rules! shift_or_error {
+    ($list:expr, $($arg:tt)*) => (
+        match $list.shift() {
+            Some((car, cdr)) => Ok((car, cdr)),
+            _ => Err(RuntimeError {msg: format!($($arg)*)})
+        }?
+    );
+}
+
 pub enum List<T> {
     Cons(Rc<T>, Rc<List<T>>),
     Nil,
@@ -56,6 +67,51 @@ impl<T> List<T> {
 
     pub fn iter(&self) -> Iter<T> {
         Iter(self)
+    }
+    
+    pub fn len(&self) -> u32 {
+        match self {
+            List::Cons(_, tail) => 1 + tail.len(),
+            _ => 0,
+        }
+    }
+    
+    pub fn shift(&self) -> Option<(Rc<T>, Rc<Self>)> {
+        match self {
+            List::Cons(head, tail) => Some((head.clone(), tail.clone())),
+            _ => None,
+        }
+    }
+    
+//    pub fn unshift(&self, head: Rc<T>) -> Rc<Self> {
+//        Rc::new(List::Cons(head, self.clone()))
+//    }
+    
+    pub fn unpack1(&self) -> Result<Rc<T>, RuntimeError> {
+        let (car, cdr) = shift_or_error!(self, "expected list(# = 1), but nil got");
+        if !cdr.is_nil() {
+            return Err(RuntimeError { msg: format!("expected list (# = 1), but # > 1 got")})
+        }
+        Ok(car)
+    }
+
+    pub fn unpack2(&self) -> Result<(Rc<T>, Rc<T>), RuntimeError> {
+        let (car, cdr) = shift_or_error!(self, "expected list(# = 2), but nil got");
+        let (cadr, cddr) = shift_or_error!(cdr, "expected list(# = 2), but # = 1 got");
+        if !cddr.is_nil() {
+            return Err(RuntimeError { msg: format!("expected list (# = 2), but # > 2 got")})
+        }
+        Ok((car, cadr))
+    }
+
+    pub fn unpack3(&self) -> Result<(Rc<T>, Rc<T>, Rc<T>), RuntimeError> {
+        let (car, cdr) = shift_or_error!(self, "expected list(# = 3), but nil got");
+        let (cadr, cddr) = shift_or_error!(cdr, "expected list(# = 3), but # = 1 got");
+        let (caddr, cdddr) = shift_or_error!(cddr, "expected list(# = 3), but # = 2 got");
+        if !cdddr.is_nil() {
+            return Err(RuntimeError { msg: format!("expected list (# = 2), but # > 3 got")})
+        }
+        Ok((car, cadr, caddr))
     }
 }
 
@@ -163,6 +219,49 @@ mod tests {
         assert_eq!(it2.next(), Some(&1));
         assert_eq!(it2.next(), Some(&2));
         assert_eq!(it2.next(), None);
+    }
+    
+    #[test]
+    fn test_list_len() {
+        let l: List<i32> = list!(1, 2, 3);
+        assert_eq!(l.len(), 3);
+    }
+    
+    #[test]
+    fn test_shift() {
+        let l = Rc::new(list!(1));
+        let (x, y) = l.shift().unwrap();
+        assert_eq!(x.as_ref(), &1);
+        assert!(y.is_nil());
+    }
+    
+    #[test]
+    fn test_unpack1() {
+        let l = Rc::new(list!(1));
+        assert_eq!(l.unpack1().unwrap().as_ref(), &1);
+
+        let l2: Rc<List<i32>> = Rc::new(list!());
+        assert!(l2.unpack1().is_err());
+
+        let l3 = Rc::new(list!(1, 2));
+        assert!(l3.unpack1().is_err());
+    }
+
+    #[test]
+    fn test_unpack2() {
+        let l: Rc<List<i32>> = Rc::new(list!(1, 2));
+        let (x1, y1) = l.unpack2().unwrap();
+        assert_eq!(x1.as_ref(), &1);
+        assert_eq!(y1.as_ref(), &2);
+    }
+    
+    #[test]
+    fn test_unpack3() {
+        let l = Rc::new(list!(1, 2, 3));
+        let (x, y, z) = l.unpack3().unwrap();
+        assert_eq!(x.as_ref(), &1);
+        assert_eq!(y.as_ref(), &2);
+        assert_eq!(z.as_ref(), &3);
     }
 
     #[test]
