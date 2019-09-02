@@ -1,6 +1,5 @@
 use std::error::Error as StdError;
 use std::fmt::{Debug,Display,Formatter,Result as FmtResult};
-use std::rc::Rc;
 use std::slice;
 use std::str::FromStr;
 
@@ -232,7 +231,7 @@ impl<'a> Parser<'a> {
         }
         if !v.is_empty() {
             for i in v.into_iter().rev() {
-                tree = List::Cons(Rc::new(i), Rc::new(tree));
+                tree = List::Cons(Box::new(i), Box::new(tree));
             }
 //            println!("@depth={}: {:?}", depth, tree);
             Ok(Some(AstNode::List(tree)))
@@ -244,9 +243,9 @@ impl<'a> Parser<'a> {
     // Vec <=> s-exp*
     pub fn parse(tokens: &Vec<(Token, Position)>) -> Result<List<AstNode>, ParseError> {
         let mut parser = Parser { tokens: tokens.iter() };
-        let mut v: Vec<Rc<AstNode>> = Vec::new();
+        let mut v: Vec<AstNode> = Vec::new();
         while let Some(node) = parser.parse_tree_node(0)? {
-            v.push(Rc::new(node));
+            v.push(node);
         }
         let a = v.into_iter().collect::<List<AstNode>>();
         Ok(a)
@@ -330,8 +329,8 @@ mod tests {
         let tree = tree.unwrap();
         let t = tree.unpack1().unwrap();
         // TODO: extract AstNode::List is struggling, fix it!
-        match *t {
-            AstNode::List(ref l) => {
+        match t {
+            AstNode::List(l) => {
 //                match *l {
 //                    List::Cons(ref x, ref y) => {
 //                        println!("x: {:?}", x);

@@ -2,6 +2,7 @@ use std::rc::Rc;
 //use std::cell::RefCell;
 use std::fmt;
 use std::iter;
+use std::mem;
 
 use crate::interpreter::RuntimeError;
 
@@ -52,8 +53,9 @@ macro_rules! shift_or_error {
     );
 }
 
+#[derive(Clone)]
 pub enum List<T> {
-    Cons(Rc<T>, Rc<List<T>>),
+    Cons(Box<T>, Box<List<T>>),
     Nil,
 }
 
@@ -68,26 +70,33 @@ impl<T> List<T> {
     pub fn iter(&self) -> Iter<T> {
         Iter(self)
     }
-    
+
     pub fn len(&self) -> u32 {
         match self {
             List::Cons(_, tail) => 1 + tail.len(),
             _ => 0,
         }
     }
-    
-    pub fn shift(&self) -> Option<(Rc<T>, Rc<Self>)> {
+
+    pub fn shift(self) -> Option<(T, Self)> {
         match self {
-            List::Cons(head, tail) => Some((head.clone(), tail.clone())),
+            List::Cons(head, tail) => Some((*head, *tail)),
             _ => None,
         }
     }
-    
-//    pub fn unshift(&self, head: Rc<T>) -> Rc<Self> {
-//        Rc::new(List::Cons(head, self.clone()))
-//    }
-    
-    pub fn unpack1(&self) -> Result<Rc<T>, RuntimeError> {
+
+    pub fn unshift(self, head: T) -> Self {
+        List::Cons(Box::new(head), Box::new(self))
+    }
+
+    pub fn unshift_r(self, rear: T) -> Self {
+        match self {
+            List::Cons(head, tail) => List::Cons(Box::new(*head), Box::new(tail.unshift_r(rear))),
+            _ => self.unshift(rear)
+        }
+    }
+
+    pub fn unpack1(self) -> Result<T, RuntimeError> {
         let (car, cdr) = shift_or_error!(self, "expected list(# = 1), but nil got");
         if !cdr.is_nil() {
             return Err(RuntimeError { msg: format!("expected list (# = 1), but # > 1 got")})
@@ -95,7 +104,7 @@ impl<T> List<T> {
         Ok(car)
     }
 
-    pub fn unpack2(&self) -> Result<(Rc<T>, Rc<T>), RuntimeError> {
+    pub fn unpack2(self) -> Result<(T, T), RuntimeError> {
         let (car, cdr) = shift_or_error!(self, "expected list(# = 2), but nil got");
         let (cadr, cddr) = shift_or_error!(cdr, "expected list(# = 2), but # = 1 got");
         if !cddr.is_nil() {
@@ -104,7 +113,7 @@ impl<T> List<T> {
         Ok((car, cadr))
     }
 
-    pub fn unpack3(&self) -> Result<(Rc<T>, Rc<T>, Rc<T>), RuntimeError> {
+    pub fn unpack3(self) -> Result<(T, T, T), RuntimeError> {
         let (car, cdr) = shift_or_error!(self, "expected list(# = 3), but nil got");
         let (cadr, cddr) = shift_or_error!(cdr, "expected list(# = 3), but # = 1 got");
         let (caddr, cdddr) = shift_or_error!(cddr, "expected list(# = 3), but # = 2 got");
@@ -115,6 +124,15 @@ impl<T> List<T> {
     }
 }
 
+impl<T> IntoIterator for List<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> IntoIter<T> {
+        IntoIter(self)
+    }
+}
+
 #[macro_export]
 macro_rules! list {
     () => (
@@ -122,8 +140,8 @@ macro_rules! list {
     );
     ($head:expr $(, $tail:expr)*) => (
         $crate::internals::List::Cons(
-            std::rc::Rc::new($head),
-            std::rc::Rc::new(list!($($tail),*))
+            Box::new($head),
+            Box::new(list!($($tail),*))
         )
     );
 }
@@ -142,15 +160,30 @@ impl<'a, T> Iterator for Iter<'a, T> {
         }
     }
 }
+pub struct IntoIter<T>(List<T>);
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
 
-impl<T> iter::FromIterator<Rc<T>> for List<T> {
+    fn next(&mut self) -> Option<Self::Item> {
+        let l = mem::replace(&mut self.0, List::Nil);
+        match l.shift() {
+            Some((car, cdr)) => {
+                mem::replace(&mut self.0, cdr);
+                Some(car)
+            },
+            _ => None,
+        }
+    }
+}
+
+impl<T> iter::FromIterator<T> for List<T> {
     fn from_iter<I>(iter: I) -> Self
     where
-        I: IntoIterator<Item = Rc<T>>,
+        I: IntoIterator<Item = T>,
     {
         let mut iter = iter.into_iter();
         match iter.next() {
-            Some(v) => List::Cons(v, Rc::new(List::from_iter(iter))),
+            Some(v) => List::Cons(Box::new(v), Box::new(List::from_iter(iter))),
             _ => List::Nil,
         }
     }
@@ -181,87 +214,80 @@ mod tests {
     use std::mem;
 
     #[test]
-    fn test_new() {
+    fn test_list_new() {
         let l: List<i32> = List::Nil;
         assert!(l.is_nil());
     }
 
     #[test]
-    fn test_iter() {
-        let l = Rc::new(List::Nil);
-        let ll = Rc::new(List::Cons(
-            Rc::new(1),
-            Rc::new(List::Cons(Rc::new(2), l.clone())),
-        ));
+    fn test_list_iter() {
+        let l = Box::new(List::Nil);
         assert!(l.is_nil());
+        let ll = Box::new(List::Cons(
+            Box::new(1),
+            Box::new(List::Cons(Box::new(2), l)),
+        ));
 
         let mut it = ll.iter();
         assert_eq!(it.next(), Some(&1));
         assert_eq!(it.next(), Some(&2));
         assert_eq!(it.next(), None);
-        mem::drop(it);
-
-        assert_eq!(Rc::strong_count(&l), 2);
-        assert_eq!(Rc::strong_count(&ll), 1);
-
-        mem::drop(ll);
-        assert_eq!(Rc::strong_count(&l), 1);
     }
 
     #[test]
-    fn test_iter_collect() {
+    fn test_list_iter_collect() {
         let ll = vec![1, 2];
 
-        let mut it = ll.iter().map(|i| Rc::new(*i));
-        let ll2 = it.collect::<List<i32>>();
+//        let mut it = ll.iter().map(|i| Box::new(*i));
+        let ll2 = ll.into_iter().collect::<List<i32>>();
         println!("ll2: {}", ll2);
         let mut it2 = ll2.iter();
         assert_eq!(it2.next(), Some(&1));
         assert_eq!(it2.next(), Some(&2));
         assert_eq!(it2.next(), None);
     }
-    
+
     #[test]
     fn test_list_len() {
         let l: List<i32> = list!(1, 2, 3);
         assert_eq!(l.len(), 3);
     }
-    
+
     #[test]
-    fn test_shift() {
-        let l = Rc::new(list!(1));
+    fn test_list_shift() {
+        let l = Box::new(list!(1));
         let (x, y) = l.shift().unwrap();
-        assert_eq!(x.as_ref(), &1);
+        assert_eq!(x, 1);
         assert!(y.is_nil());
     }
-    
+
     #[test]
     fn test_unpack1() {
-        let l = Rc::new(list!(1));
-        assert_eq!(l.unpack1().unwrap().as_ref(), &1);
+        let l = Box::new(list!(1));
+        assert_eq!(l.unpack1().unwrap(), 1);
 
-        let l2: Rc<List<i32>> = Rc::new(list!());
+        let l2: Box<List<i32>> = Box::new(list!());
         assert!(l2.unpack1().is_err());
 
-        let l3 = Rc::new(list!(1, 2));
+        let l3 = Box::new(list!(1, 2));
         assert!(l3.unpack1().is_err());
     }
 
     #[test]
     fn test_unpack2() {
-        let l: Rc<List<i32>> = Rc::new(list!(1, 2));
+        let l: Box<List<i32>> = Box::new(list!(1, 2));
         let (x1, y1) = l.unpack2().unwrap();
-        assert_eq!(x1.as_ref(), &1);
-        assert_eq!(y1.as_ref(), &2);
+        assert_eq!(x1, 1);
+        assert_eq!(y1, 2);
     }
-    
+
     #[test]
     fn test_unpack3() {
-        let l = Rc::new(list!(1, 2, 3));
+        let l = Box::new(list!(1, 2, 3));
         let (x, y, z) = l.unpack3().unwrap();
-        assert_eq!(x.as_ref(), &1);
-        assert_eq!(y.as_ref(), &2);
-        assert_eq!(z.as_ref(), &3);
+        assert_eq!(x, 1);
+        assert_eq!(y, 2);
+        assert_eq!(z, 3);
     }
 
     #[test]
