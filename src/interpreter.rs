@@ -906,7 +906,7 @@ fn primitive_cdr(args: List<Value>) -> Result<Value, RuntimeError> {
 
 fn primitive_set_car(args: List<Value>) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        runtime_error!("wrong number of args to `set-car!': 1 expected, {} got", args.len())
+        runtime_error!("wrong number of args to `set-car!': 2 expected, {} got", args.len())
     }
     let (x, y) = args.unpack2()?;
     if x.is_pair() {
@@ -920,7 +920,7 @@ fn primitive_set_car(args: List<Value>) -> Result<Value, RuntimeError> {
 
 fn primitive_set_cdr(args: List<Value>) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        runtime_error!("wrong number of args to `set-cdr!': 1 expected, {} got", args.len())
+        runtime_error!("wrong number of args to `set-cdr!': 2 expected, {} got", args.len())
     }
     let (x, y) = args.unpack2()?;
     if x.is_pair() {
