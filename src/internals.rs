@@ -71,7 +71,7 @@ impl<T> List<T> {
         Iter(self)
     }
 
-    pub fn len(&self) -> u32 {
+    pub fn len(&self) -> usize {
         match self {
             List::Cons(_, tail) => 1 + tail.len(),
             _ => 0,
