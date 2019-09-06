@@ -26,12 +26,12 @@ pub struct RuntimeError {
 impl StdError for RuntimeError {}
 impl Debug for RuntimeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "RUNTIME ERROR: {}", self.msg)
+        write!(f, "RUNTIME ERR: {}", self.msg)
     }
 }
 impl Display for RuntimeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "RUNTIME ERROR: {}", self.msg)
+        write!(f, "RUNTIME ERR: {}", self.msg)
     }
 }
 macro_rules! runtime_error {
@@ -41,6 +41,7 @@ macro_rules! runtime_error {
 }
 
 pub type RRV = Rc<RefCell<Value>>;
+pub type RREnv = Rc<RefCell<Env>>;
 
 #[derive(Clone)]
 pub struct Cons(RRV, RRV);
@@ -204,6 +205,13 @@ impl Debug for Value {
 impl Value {
     pub fn iter(&self) -> ConsIter {
         ConsIter(rr!(self.clone()))
+    }
+    
+    pub fn is_unspecified(&self) -> bool {
+        match self {
+            Value::Unspecified => true,
+            _ => false,
+        }
     }
     
     pub fn is_nil(&self) -> bool {
@@ -638,6 +646,9 @@ impl Continuation {
                                 let (car, cdr) = shift_or_error!(operands, "bad define form: at least two arguments");
                                 match car {
                                     Value::Symbol(var_name) => {
+                                        if cdr.len() != 1 {
+                                            runtime_error!("bad define form: must supply exactly 1 value to define");
+                                        }
                                         let var_val = cdr.unpack1()?;
                                         // bounce val to eval
                                         Ok(Trampoline::Bounce(var_val, env.clone(), Continuation::EvaluateDefine(var_name, env, next)))
@@ -1133,10 +1144,11 @@ fn eval_expressions(expr: List<Value>, env: Rc<RefCell<Env>>, k: Box<Continuatio
 }
 
 // sexp either list or atom
-fn process(expr: List<Value>, env: Rc<RefCell<Env>>) -> Result<Value, RuntimeError> {
-    if expr.len() == 0 {
+pub fn process(ast: &List<AstNode>, env: Rc<RefCell<Env>>) -> Result<Value, RuntimeError> {
+    if ast.len() == 0 {
         Ok(Value::Unspecified)
     } else {
+        let expr = from_ast_nodes(ast);
         let mut b = eval_expressions(expr, env, Box::new(Continuation::Return))?;
         loop {
             match b {
@@ -1170,7 +1182,6 @@ fn process(expr: List<Value>, env: Rc<RefCell<Env>>) -> Result<Value, RuntimeErr
         }
     }
 }
-
 
 mod tests {
     use super::*;
@@ -1287,8 +1298,7 @@ mod tests {
     fn exec(prog: &str) -> Result<Value, RuntimeError> {
         let tokens = Lexer::tokenize(prog).unwrap();
         let tree = Parser::parse(&tokens).unwrap();
-        let eval_ast = from_ast_nodes(&tree);
-        process(eval_ast, Env::root())
+        process(&tree, Env::root())
     }
     
     fn exec_ok(prog: &str) -> Value {

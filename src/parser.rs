@@ -77,8 +77,8 @@ impl Display for AstNode {
 
 pub struct ParseError {
     msg: String,
-    line: u32,
-    column: u32,
+    line: usize,
+    column: usize,
 }
 
 impl Debug for ParseError {
@@ -107,7 +107,7 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn parse_tree_node(&mut self, depth: u32) -> Result<Option<AstNode>, ParseError> {
+    fn parse_tree_node(&mut self, depth: usize) -> Result<Option<AstNode>, ParseError> {
         let mut lastpos = (0, 0);
         match self.tokens.next() {
             Some((token, pos)) => {
@@ -223,7 +223,7 @@ impl<'a> Parser<'a> {
     }
     
     // always return list !
-    fn parse_tree(&mut self, depth: u32) -> Result<Option<AstNode>, ParseError> {
+    fn parse_tree(&mut self, depth: usize) -> Result<Option<AstNode>, ParseError> {
         let mut tree: List<AstNode> = List::Nil;
         let mut v: Vec<AstNode> = Vec::new();
         while let Some(node) = self.parse_tree_node(depth)? {

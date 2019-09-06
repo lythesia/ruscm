@@ -26,20 +26,20 @@ pub enum Token {
     ELLIPSIS,
 }
 
-pub type Position = (u32, u32);
+pub type Position = (usize, usize);
 
 pub struct Lexer<'a> {
     chars: iter::Peekable<Chars<'a>>,
     current: Option<char>,
     tokens: Vec<(Token, Position)>, // TODO: token with position info?
-    line: u32,
-    column: u32,
+    line: usize,
+    column: usize,
 }
 
 pub struct LexError {
     msg: String,
-    line: u32,
-    column: u32,
+    line: usize,
+    column: usize,
 }
 
 impl Debug for LexError {
@@ -525,6 +525,18 @@ impl<'a> Lexer<'a> {
             current: None,
             tokens: Vec::new(),
             line: 1,
+            column: 0,
+        };
+        lex.parse()?;
+        Ok(lex.tokens)
+    }
+    
+    pub fn tokenize_line(i: &str, line: usize) -> Result<Vec<(Token, Position)>, LexError> {
+        let mut lex = Lexer {
+            chars: i.chars().peekable(),
+            current: None,
+            tokens: Vec::new(),
+            line,
             column: 0,
         };
         lex.parse()?;
