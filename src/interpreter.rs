@@ -540,6 +540,10 @@ impl Env {
             _ => e.clone(),
         }
     }
+    
+    pub fn values(&self) -> &HashMap<String, Value> {
+        &self.values
+    }
 }
 
 #[derive(Clone)]
