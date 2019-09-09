@@ -41,7 +41,6 @@ macro_rules! runtime_error {
 }
 
 pub type RRV = Rc<RefCell<Value>>;
-pub type RREnv = Rc<RefCell<Env>>;
 
 #[derive(Clone)]
 pub struct Cons(RRV, RRV);
@@ -353,6 +352,7 @@ impl Value {
         }
     }
 
+    // non-recursive, only transform 1st layer of DatumList to List
     pub fn from_ast_list(self) -> Result<List<Value>, RuntimeError> {
         match self {
             Value::DatumList(l) => Ok(l),
@@ -360,6 +360,7 @@ impl Value {
         }
     }
     
+    // recursive
     pub fn to_ast_list(self) -> Value {
         if !self.is_list() {
             self
@@ -369,7 +370,19 @@ impl Value {
         }
     }
     
+    // non-recursive, only transform 1st layer of ConsList to List
+    pub fn to_list(self) -> Result<List<Value>, RuntimeError> {
+        if !self.is_list() {
+            runtime_error!("value not cons list: {:?}", self);
+        }
+        let l = self.iter()
+            .map(|v| v.borrow().clone())
+            .collect::<List<Value>>();
+        Ok(l)
+    }
+    
     // List to Cons struct
+    // co-recursive with to_value
     pub fn from_list(lst: List<Value>) -> Value {
         match lst {
             List::Cons(head, tail) => {
@@ -382,6 +395,7 @@ impl Value {
         }
     }
 
+    // co-recursive with from_list
     pub fn to_value(self) -> Self {
         match self {
             Value::DatumList(l) => {
@@ -393,17 +407,6 @@ impl Value {
             },
         }
     }
-    
-    // not recursive
-    pub fn to_list(self) -> Result<List<Value>, RuntimeError> {
-        if !self.is_list() {
-            runtime_error!("value not cons list: {:?}", self);
-        }
-        let l = self.iter()
-            .map(|v| v.borrow().clone())
-            .collect::<List<Value>>();
-        Ok(l)
-    }
 }
 
 pub fn from_ast_node(i: &AstNode) -> Value {
@@ -414,6 +417,10 @@ pub fn from_ast_node(i: &AstNode) -> Value {
                 Ok(f) => Value::SpecialForm(f),
                 _ => match v.as_str() {
                     "λ" => Value::SpecialForm(SpecialForm::Lambda),
+                    "quote" => Value::SpecialForm(SpecialForm::Quote),
+                    "quasiquote" => Value::SpecialForm(SpecialForm::Quasiquote),
+                    "unquote" => Value::SpecialForm(SpecialForm::Unquote),
+                    "unquote-splicing" => Value::SpecialForm(SpecialForm::UnquoteSplicing),
                     "call-with-current-continuation" => Value::SpecialForm(SpecialForm::CallCC),
                     _ => Value::Symbol(v.clone()),
                 }
@@ -535,7 +542,6 @@ impl Env {
     }
 }
 
-// TODO: type Rc<RefCell<Env>>
 #[derive(Clone)]
 pub enum Continuation {
     // top continuation
@@ -587,6 +593,16 @@ pub enum Continuation {
         Rc<RefCell<Env>>,
         Box<Continuation>,
     ),
+    ContinueQuasiExpand(
+        bool, // if skip (for unquote-splicing)
+        List<Value>, // rest exprs
+        List<Value>, // acc
+        Rc<RefCell<Env>>,
+        Box<Continuation>,
+    ),
+    ExecuteUnQuoteSplicing(
+        Box<Continuation>,
+    ),
 //    ContinueMacroExpand(
 //        List<Value>, // rest expr
 //        List<Value>, // expanded expr
@@ -625,6 +641,18 @@ fn make_lambda(params: Vec<String>, body: List<Value>, env: Rc<RefCell<Env>>) ->
 }
 
 impl Continuation {
+    pub fn is_quasiquote_mode(&self) -> bool {
+        match self {
+            Continuation::ContinueQuasiExpand(_, _, _, _, _) => true,
+            _ => false,
+        }
+    }
+    
+//    pub fn is_macro_mode(&self) -> bool {
+//        match self {
+//        }
+//    }
+    
     pub fn run(self, val: Value) -> Result<Trampoline, RuntimeError> {
         match self {
             Continuation::EvaluateExpressions(rest, env, next) => {
@@ -697,6 +725,9 @@ impl Continuation {
                             },
                             // (quote exp)
                             SpecialForm::Quote => {
+                                if operands.len() != 1 {
+                                    runtime_error!("bad quote form: 1 arguments expected, {} got", operands.len());
+                                }
                                 let quoted = operands.unpack1()?.to_value(); // to cons list
                                 Ok(Trampoline::Value(quoted, *next))
                             },
@@ -723,6 +754,47 @@ impl Continuation {
                                 let expr = operands.unpack1()?;
                                 // fist eval expr to an scm object(datum -> cons), then execute(cons -> datum)
                                 Ok(Trampoline::Bounce(expr, env.clone(), Continuation::ExecuteEval(env, next)))
+                            },
+                            // (quasiquote expr)
+                            // NOTE: unquote must be inside quasiquote
+                            SpecialForm::Quasiquote => {
+                                if operands.len() != 1 {
+                                    runtime_error!("bad quasiquote form: 1 arguments expected, {} got", operands.len());
+                                }
+                                let expr = operands.unpack1()?;
+                                match expr {
+                                    Value::DatumList(l) => {
+                                        match l.shift() {
+                                            Some((car, cdr)) => Ok(Trampoline::QuasiBounce(car, env.clone(), Continuation::ContinueQuasiExpand(false, cdr, List::Nil, env, next))),
+                                            _ => Ok(Trampoline::Value(Value::Nil, *next))
+                                        }
+                                    },
+                                    _ => Ok(Trampoline::Value(expr, *next))
+                                }
+                            },
+                            // (unquote expr)
+                            // NOTE: we do not check if it's inside quasiquote, otherwise it's UB
+                            SpecialForm::Unquote => {
+                                if operands.len() != 1 {
+                                    runtime_error!("bad unquote form: 1 arguments expected, {} got", operands.len());
+                                }
+                                let expr = operands.unpack1()?;
+                                if !next.is_quasiquote_mode() {
+                                    runtime_error!("bad unquote form: outside of quasiquote in form (unquote {})", expr);
+                                }
+                                Ok(Trampoline::Bounce(expr, env, *next))
+                            },
+                            // (unquote-splicing expr)
+                            // NOTE: we do not check if it's inside quasiquote, otherwise it's UB
+                            SpecialForm::UnquoteSplicing => {
+                                if operands.len() != 1 {
+                                    runtime_error!("bad unquote-splicing form: 1 arguments expected, {} got", operands.len());
+                                }
+                                let expr = operands.unpack1()?;
+                                if !next.is_quasiquote_mode() {
+                                    runtime_error!("bad unquote form: outside of quasiquote in form (unquote {})", expr);
+                                }
+                                Ok(Trampoline::Bounce(expr, env.clone(), Continuation::ExecuteUnQuoteSplicing(next)))
                             },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next))
                         }
@@ -772,6 +844,43 @@ impl Continuation {
             Continuation::ExecuteEval(env, next) => {
                 // TODO: which env? where the eval appears?
                 Ok(Trampoline::Bounce(val.to_ast_list(), env, *next))
+            },
+            Continuation::ContinueQuasiExpand(skip, rest, acc, env, next) => {
+                // cons quasi value
+                let acc2 = if skip {acc} else {acc.unshift_r(val)};
+                match rest.shift() {
+                    // more quasi symbols
+                    Some((car, cdr)) => Ok(Trampoline::QuasiBounce(car, env.clone(),
+                                                                   Continuation::ContinueQuasiExpand(false, cdr, acc2, env, next))),
+                    // exhaust symbols
+                    _ => {
+                        // list to cons list
+                        let cl = Value::from_list(acc2);
+                        Ok(Trampoline::Value(cl, *next))
+                    },
+                }
+            },
+            Continuation::ExecuteUnQuoteSplicing(next) => {
+                if !val.is_list() {
+                    runtime_error!("impossible! result of unquote-splicing must be a list");
+                }
+                let l = val.to_list()?;
+                // val is cons list, we need to unpack it
+                // next is ContinuaQuasiExpand
+                match *next {
+                    Continuation::ContinueQuasiExpand(_, rest, acc, env, next_k) => {
+                        if l.is_nil() {
+                            // skip
+                            Ok(Trampoline::Value(Value::Unspecified, Continuation::ContinueQuasiExpand(true, rest, acc, env, next_k)))
+                        } else {
+                            // merge
+                            let new_acc: List<Value> = l.into_iter().fold(acc, |acc2, v| acc2.unshift_r(v));
+                            // utilize skip when finish merge
+                            Ok(Trampoline::Value(Value::Unspecified, Continuation::ContinueQuasiExpand(true, rest, new_acc, env, next_k)))
+                        }
+                    },
+                    _ => runtime_error!("impossible! unquote-splicing outside of quasiquote"),
+                }
             },
             Continuation::Return => Ok(Trampoline::Off(val))
         }
@@ -1121,14 +1230,14 @@ pub enum Trampoline {
         Continuation,
     ),
     // quasiquote mode
-//    QuasiBounce(
-//        Rc<RefCell<Value>>,
-//        Rc<RefCell<Env>>,
-//        Continuation,
-//    ),
+    QuasiBounce(
+        Value,
+        Rc<RefCell<Env>>,
+        Continuation,
+    ),
 //    // macro mode
 //    MacroBounce(
-//        Rc<RefCell<Value>>,
+//        Value,
 //        Rc<RefCell<Env>>,
 //        Continuation,
 //    ),
@@ -1169,11 +1278,34 @@ pub fn process(ast: &List<AstNode>, env: Rc<RefCell<Env>>) -> Result<Value, Runt
                             };
                             next_k.run(v)?
                         },
-                        _ => next_k.run(next_v.clone())?, // NOTE: this arm is same with Trampoline::Value, but value can run with symbol
+                        _ => next_k.run(next_v)?, // NOTE: this arm is same with Trampoline::Value, but ::Value can run with symbol
                     }
                 },
                 Trampoline::Value(next_v, next_k) => {
                     b = next_k.run(next_v)?;
+                },
+                Trampoline::QuasiBounce(next_v, next_e, next_k) => {
+                    b = match next_v {
+                        // 1. list: normal list or apply like: unquote, unquote-splicing
+                        Value::DatumList(l) => {
+                            match l.shift() {
+                                Some((car, cdr)) => {
+                                    match car {
+                                        f @ Value::SpecialForm(SpecialForm::Unquote) | f @ Value::SpecialForm(SpecialForm::UnquoteSplicing) => {
+                                            // unquote to val; unquote-splicing to list and then unpack
+                                            // bounce to apply-like with form unquote
+                                            Trampoline::Bounce(f, next_e.clone(), Continuation::ApplyLike(cdr, next_e, Box::new(next_k)))
+                                        },
+                                        _ => Trampoline::QuasiBounce(car, next_e.clone(),
+                                                                     Continuation::ContinueQuasiExpand(false, cdr, List::Nil, next_e, Box::new(next_k))),
+                                    }
+                                },
+                                _ => next_k.run(Value::Nil)?,
+                            }
+                        },
+                        // 2. symbol: reflect it directly
+                        _ => next_k.run(next_v)?,
+                    };
                 },
                 Trampoline::Off(next_v) => {
                     return Ok(next_v);
@@ -1417,5 +1549,19 @@ mod tests {
         let prog = "(define (foo x) (eval (quote (+ 1 2))) x) (foo 5) ; => 5";
         let ret = exec_ok(prog);
         assert_eq!(ret.to_integer().unwrap(), 5);
+    }
+    
+    #[test]
+    fn test_quasiquoting_1() {
+        let prog = "(apply + (quasiquote (2 (unquote (+ 1 2)) 4))) ; => 9";
+        let ret = exec_ok(prog);
+        assert_eq!(ret.to_integer().unwrap(), 9);
+    }
+    
+    #[test]
+    fn test_quasiquoting_2() {
+        let prog = "(apply + `(2 ,(+ 1 2) ,@(list 1 2 3) 4)) ; => 15";
+        let ret = exec_ok(prog);
+        assert_eq!(ret.to_integer().unwrap(), 15);
     }
 }

@@ -26,6 +26,7 @@ pub struct Repl {
     state: State,
 }
 
+// TODO: completer: 1. keywords; 2. symbol of root-env
 impl Repl {
     fn tokens_count_with<F>(tokens: &Vec<(Token, Position)>, f: F) -> usize
     where F: Fn(&Token) -> bool {

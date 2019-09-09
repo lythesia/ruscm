@@ -36,45 +36,6 @@ impl Display for AstNode {
     }
 }
 
-// TODO: some keywords need to be SPECIAL-FORMS?
-// note with ! can be implement by library macros
-//#[derive(Debug, Display, Eq, PartialEq)]
-//#[derive(EnumString)]
-//#[strum(serialize_all = "mixed_case")]
-//pub enum Keyword {
-//    // expression keyword (which whole s-exp gives an value)
-//    QUOTE,
-//    LAMBDA,
-//    IF,
-//    ELSE,
-//    #[strum(serialize = "set!")]
-//    SET,
-//    BEGIN,
-////    COND, !
-////    AND, !
-////    OR, !
-////    CASE, !
-////    LET, !
-////    LETSTAR, !
-////    LETREC, !
-////    DO, !
-////    DELAY, !
-//    QUASIQUOTE,
-//    // other syntactic keyword
-//    DEFINE,
-//    UNQUOTE,
-//    #[strum(serialize = "unquote-splicing")]
-//    UNQUOTE_SPLICING,
-//    #[strum(serialize = ".")]
-//    DOT,
-//    #[strum(serialize = "...")]
-//    ELLIPSIS,
-//    #[strum(serialize = "define-syntax")]
-//    DEFINE_SYNTAX,
-//    #[strum(serialize = "syntax-rules")]
-//    SYNTAX_RULES,
-//}
-
 pub struct ParseError {
     msg: String,
     line: usize,

@@ -31,7 +31,7 @@ pub type Position = (usize, usize);
 pub struct Lexer<'a> {
     chars: iter::Peekable<Chars<'a>>,
     current: Option<char>,
-    tokens: Vec<(Token, Position)>, // TODO: token with position info?
+    tokens: Vec<(Token, Position)>,
     line: usize,
     column: usize,
 }
@@ -195,6 +195,7 @@ impl<'a> Lexer<'a> {
     }
     
     // NOTE: only escape: \" \t \n \r
+    // TODO: line wrap?
     fn parse_string(&mut self) -> Result<String, LexError> {
         match self.current {
             Some('"') => {
