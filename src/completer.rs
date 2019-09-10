@@ -8,8 +8,9 @@ use rustyline::{
     completion::Completer,
 };
 use memchr::memchr;
+use strum::IntoEnumIterator; // strum iter
 
-use crate::interpreter::Env;
+use crate::interpreter::{SpecialForm, Env};
 
 pub struct ReplCompleter {
     break_chars: &'static [u8],
@@ -103,9 +104,12 @@ impl Completer for ReplCompleter {
             Ok((0, Vec::with_capacity(0)))
         } else {
             let (start, symbol) = extract_symbol(line, pos, &self.break_chars);
+            let mut specials: Vec<String> = SpecialForm::iter().map(|v| v.to_string()).collect();
+            specials.push("call-with-current-continuation".to_string());
             let env_symbols = self.env.borrow()
                 .values()
                 .keys()
+                .chain(specials.iter())
                 .filter(|&v| v.starts_with(symbol))
                 .map(|v| String::from(v))
                 .collect::<Vec<_>>();

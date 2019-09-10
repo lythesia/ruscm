@@ -19,6 +19,13 @@ macro_rules! rr {
     };
 }
 
+macro_rules! all_of {
+    ($args:ident, $pred:ident) => {
+        $args.iter().all(|v| v.$pred())
+    };
+}
+
+
 // TODO: err to common lib?
 pub struct RuntimeError {
     pub msg: String,
@@ -67,7 +74,7 @@ impl PartialEq for Cons {
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
-#[derive(EnumString)]
+#[derive(EnumString, EnumIter)]
 #[strum(serialize_all = "mixed_case")]
 pub enum SpecialForm {
     Quote,
@@ -85,21 +92,67 @@ pub enum SpecialForm {
     Apply,
     #[strum(serialize = "define-syntax")]
     DefineSyntax,
+    #[strum(serialize = "syntax-rules")]
+    SyntaxRules,
     #[strum(serialize = "call/cc")]
     CallCC,
     // TODO: And, Or
 }
 
 #[derive(Clone)]
+enum PatternElement {
+    // datum
+    String(String),
+    Character(char),
+    Boolean(bool),
+    Integer(i64),
+    Float(f64),
+    // pattern
+    Keyword(String),
+    Symbol(String),
+    VariadicSymbol(String),
+    SubPattern(List<PatternElement>),
+}
+
+impl PatternElement {
+    pub fn from_ast_node(n: Value, keywords: &Vec<String>) -> Result<PatternElement, RuntimeError> {
+        match n {
+            Value::String(v) => Ok(PatternElement::String(v)),
+            Value::Character(v) => Ok(PatternElement::Character(v)),
+            Value::Boolean(v) => Ok(PatternElement::Boolean(v)),
+            Value::Integer(v) => Ok(PatternElement::Integer(v)),
+            Value::Float(v) => Ok(PatternElement::Float(v)),
+            Value::Symbol(v) => {
+                if keywords.contains(&v) {
+                    Ok(PatternElement::Keyword(v))
+                } else {
+                    Ok(PatternElement::Symbol(v))
+                }
+            },
+            Value::VariadicSymbol(v) => Ok(PatternElement::VariadicSymbol(v)),
+            _ => runtime_error!("bad pattern variable: {:?}", n),
+        }
+    }
+    
+    pub fn from_ast_list(pat: List<Value>, keywords: &Vec<String>) -> Result<List<PatternElement>, RuntimeError> {
+        pat.into_iter().map(|v| match v {
+            Value::DatumList(l) => Self::from_ast_list(l, keywords).map(|v| PatternElement::SubPattern(v)),
+            n => Self::from_ast_node(n, keywords),
+        }).collect::<Result<List<_>, _>>()
+    }
+}
+
+#[derive(Clone)]
 pub struct SyntaxRule (
-    Vec<String>,   // pattern: list of symbols
-    List<Value>,    // body
+    List<PatternElement>, // pattern
+    List<Value>, // template (as ast)
 );
 
 #[derive(Clone)]
 pub enum Value {
     Unspecified,
     Symbol(String),
+    VariadicSymbol(String), // for macro
     Boolean(bool),
     Integer(i64),
     Float(f64),
@@ -114,13 +167,13 @@ pub enum Value {
     // defined lambda
     Procedure(
         Vec<String>,        // params: immutable
-        List<Value>,  // body: clone of rc, ast tree struct, not-evaluated, not-(macro)-expanded, always list
+        List<Value>,        // body: clone of rc, ast tree struct, not-evaluated, not-(macro)-expanded, always list
         Rc<RefCell<Env>>,   // env
     ),
     Macro(
-        String,             // name: for display only
+        String,             // name: for display only TODO: really need?
         Vec<String>,        // keywords
-        List<SyntaxRule>,   // match arms
+        Vec<SyntaxRule>,    // match arms
         Rc<RefCell<Env>>,   // defining lexical scope(lenv)
     ),
     Continuation(Box<Continuation>),
@@ -150,6 +203,7 @@ impl Display for Value {
         match *self {
             Value::Boolean(v) => write!(f, "#{}", if v { "t" } else { "f" }),
             Value::Symbol(ref v) => write!(f, "{}", v),
+            Value::VariadicSymbol(ref v) => write!(f, "{} ...", v),
             Value::Integer(v) => write!(f, "{}", v),
             Value::Float(v) => write!(f, "{}", v),
             Value::Character(v) => write!(f, "{}", v),
@@ -288,6 +342,13 @@ impl Value {
             _ => false,
         }
     }
+    
+    pub fn is_symbol_with(&self, s: &str) -> bool {
+        match self {
+            Value::Symbol(ref v) => v == s,
+            _ => false,
+        }
+    }
 
     pub fn is_boolean(&self) -> bool {
         match self {
@@ -309,46 +370,60 @@ impl Value {
             _ => false,
         }
     }
+    
+    pub fn is_ast_list(&self) -> bool {
+        match self {
+            Value::DatumList(_) => true,
+            _ => false,
+        }
+    }
 
-    pub fn to_integer(self) -> Result<i64, RuntimeError> {
+    pub fn as_integer(self) -> Result<i64, RuntimeError> {
         match self {
             Value::Integer(v) => Ok(v),
             _ => runtime_error!("value not integer: {:?}", self),
         }
     }
 
-    pub fn to_float(self) -> Result<f64, RuntimeError> {
+    pub fn as_float(self) -> Result<f64, RuntimeError> {
         match self {
             Value::Float(v) => Ok(v),
             _ => runtime_error!("value not float: {:?}", self),
         }
     }
 
-    pub fn to_symbol(self) -> Result<String, RuntimeError> {
+    pub fn as_symbol(self) -> Result<String, RuntimeError> {
         match self {
             Value::Symbol(s) => Ok(s),
             _ => runtime_error!("value not symbol: {:?}", self),
         }
     }
 
-    pub fn to_bool(self) -> Result<bool, RuntimeError> {
+    pub fn as_bool(self) -> Result<bool, RuntimeError> {
         match self {
             Value::Boolean(v) => Ok(v),
             _ => runtime_error!("value not boolean: {:?}", self),
         }
     }
 
-    pub fn to_char(self) -> Result<char, RuntimeError> {
+    pub fn as_char(self) -> Result<char, RuntimeError> {
         match self {
             Value::Character(v) => Ok(v),
             _ => runtime_error!("value not character: {:?}", self),
         }
     }
 
-    pub fn to_pair(self) -> Result<Cons, RuntimeError> {
+    pub fn as_pair(self) -> Result<Cons, RuntimeError> {
         match self {
             Value::Cons(v) => Ok(v),
             _ => runtime_error!("value not pair: {:?}", self),
+        }
+    }
+    
+    pub fn as_string(self) -> Result<String, RuntimeError> {
+        match self {
+            Value::String(v) => Ok(v),
+            _ => runtime_error!("value not string: {:?}", self),
         }
     }
 
@@ -434,10 +509,19 @@ pub fn from_ast_node(i: &AstNode) -> Value {
     }
 }
 pub fn from_ast_nodes(l: &List<AstNode>) -> List<Value> {
-    let nl = l.iter()
+    let mut nl = l.iter()
         .map(|x| from_ast_node(x))
-        .collect::<List<Value>>();
-    nl
+        .collect::<Vec<Value>>();
+    let n = nl.len();
+    if n >= 2 {
+        let (x, y) = (&nl[n-2], &nl[n-1]);
+        if x.is_symbol() && y.is_symbol_with("...") {
+            let xs = x.clone().as_symbol().unwrap();
+            nl.truncate(n-2);
+            nl.push(Value::VariadicSymbol(xs));
+        }
+    }
+    nl.into_iter().collect::<List<Value>>()
 }
 
 pub struct Env {
@@ -607,6 +691,11 @@ pub enum Continuation {
     ExecuteUnQuoteSplicing(
         Box<Continuation>,
     ),
+    EvaluateMacroDefine(
+        String, // macro-name
+        Rc<RefCell<Env>>, // lenv
+        Box<Continuation>,
+    ),
 //    ContinueMacroExpand(
 //        List<Value>, // rest expr
 //        List<Value>, // expanded expr
@@ -644,6 +733,39 @@ fn make_lambda(params: Vec<String>, body: List<Value>, env: Rc<RefCell<Env>>) ->
     Ok(Value::Procedure(params, body, env))
 }
 
+fn verify_syntax_pattern(pat: &List<Value>) -> Result<(), RuntimeError> {
+    let n = pat.len();
+    if n == 0 {
+        return Ok(());
+    } else {
+        for v in pat.iter() {
+            match v {
+                Value::DatumList(ref l) => verify_syntax_pattern(l)?,
+                _ => (),
+            }
+        }
+    }
+    let ellipsis = "...";
+    match pat.iter().position(|v| v.is_symbol_with(ellipsis)) {
+        Some(i) => {
+            if i != n - 1 {
+                runtime_error!("bad pattern: ellipsis must be the last {:?}", pat)
+            } else if n == 1 {
+                runtime_error!("bad pattern: missing pattern variable before ellipsis {:?}", pat)
+            } else { // n > 1
+                let v = pat.iter().nth(n-2).unwrap();
+                if !v.is_symbol() {
+                    runtime_error!("bad pattern: ellipsis must be prefixed with symbol {:?}", pat)
+                } else {
+                    Ok(())
+                }
+            }
+        },
+        _ => Ok(()),
+    }
+}
+// end utils
+
 impl Continuation {
     pub fn is_quasiquote_mode(&self) -> bool {
         match self {
@@ -652,10 +774,14 @@ impl Continuation {
         }
     }
     
-//    pub fn is_macro_mode(&self) -> bool {
-//        match self {
-//        }
-//    }
+    pub fn is_macrodef_mode(&self) -> bool {
+        match self {
+            Continuation::EvaluateMacroDefine(_, _, _) => true,
+            _ => false,
+        }
+    }
+    
+    // TODO: pub fn is_macroexp_mode(&self) -> bool
     
     pub fn run(self, val: Value) -> Result<Trampoline, RuntimeError> {
         match self {
@@ -687,8 +813,8 @@ impl Continuation {
                                     },
                                     Value::DatumList(l) => {
                                         let (caar, cadr) = shift_or_error!(l, "bad define form: missing procedure name");
-                                        let var_name = caar.to_symbol()?;
-                                        let params = cadr.into_iter().map(|v: Value| v.to_symbol()).collect::<Result<Vec<String>, _>>()?;
+                                        let var_name = caar.as_symbol()?;
+                                        let params = cadr.into_iter().map(|v: Value| v.as_symbol()).collect::<Result<Vec<String>, _>>()?;
                                         let body = cdr;
                                         // make lambda
                                         let proc = make_lambda(params, body, env.clone())?;
@@ -700,7 +826,7 @@ impl Continuation {
                             // (set! var val)
                             SpecialForm::Set => {
                                 let (var_name, var_val) = operands.unpack2()?;
-                                let name = var_name.to_symbol()?;
+                                let name = var_name.as_symbol()?;
                                 Ok(Trampoline::Bounce(var_val, env.clone(), Continuation::EvaluateSet(name, env, next)))
                             },
                             // (if predicate consequent [alternative])
@@ -721,7 +847,7 @@ impl Continuation {
                                     runtime_error!("bad lambda form: empty body");
                                 }
                                 let pl: List<Value> = car.from_ast_list()?;
-                                let params = pl.into_iter().map(|v: Value| v.to_symbol()).collect::<Result<Vec<String>, _>>()?;
+                                let params = pl.into_iter().map(|v: Value| v.as_symbol()).collect::<Result<Vec<String>, _>>()?;
                                 let body = cdr;
                                 // make lambda
                                 let proc = make_lambda(params, body, env.clone())?;
@@ -799,6 +925,101 @@ impl Continuation {
                                     runtime_error!("bad unquote form: outside of quasiquote in form (unquote {})", expr);
                                 }
                                 Ok(Trampoline::Bounce(expr, env.clone(), Continuation::ExecuteUnQuoteSplicing(next)))
+                            },
+                            // (define-syntax macro
+                            //   ..
+                            // )
+                            SpecialForm::DefineSyntax => {
+                                if operands.len() != 2 {
+                                    runtime_error!("bad define-syntax form: 2 arguments expected, {} got", operands.len());
+                                }
+                                let (fst, snd) = operands.unpack2()?;
+                                let mut bad_macro_msg = format!("bad define-syntax form: invalid macro body {:?}", snd);
+                                match fst {
+                                    // snd must be (syntax-rules () ..)
+                                    Value::Symbol(macro_name) => {
+                                        let macro_body = match snd.from_ast_list() {
+                                            Ok(v) => v,
+                                            Err(_) => runtime_error!("{}", bad_macro_msg),
+                                        };
+                                        if macro_body.len() < 2 {
+                                            runtime_error!("{}", bad_macro_msg);
+                                        }
+                                        // (sytanx-rules (keywords ..) ..)
+                                        let (car, cdr) = macro_body.shift().unwrap();
+                                        match car {
+                                            f @ Value::SpecialForm(SpecialForm::SyntaxRules) => {
+                                                let reform = Value::DatumList(cdr.unshift(f));
+                                                Ok(Trampoline::Bounce(reform, env.clone(),
+                                                                      Continuation::EvaluateMacroDefine(macro_name, env, next)))
+                                            },
+                                            _ => runtime_error!("bad define-syntax form: must be followed by syntax-rules"),
+                                        }
+                                    },
+                                    _ => runtime_error!("bad define-syntax form: not variable name {:?}", fst),
+                                }
+                            },
+                            // (syntax-rules (keywords ..)
+                            //   (pattern template)
+                            //   ..
+                            // )
+                            // ; pattern = (pat ...) | (pat pat ... pat) | (pat ... pat ellipsis)
+                            // ; template = (elem ...) | (elem elem ... tmpl) |
+                            // 1. pat cannot be ellipsis; 2. ellipsis must be the last of enclosing list; 3. dot not allowed
+                            // 4. e ... match 0 or more
+                            SpecialForm::SyntaxRules => {
+                                if !next.is_macrodef_mode() {
+                                    runtime_error!("bad syntax-rules form: outside of define-syntax form {:?}", operands);
+                                }
+                                let (car, cdr) = shift_or_error!(operands, "bad syntax-rules form: at least 1 arguments expected, 0 got");
+                                // 1. keywords
+                                let mut bad_macro_msg = format!("{:?}", car);
+                                let keywords: Vec<String> = match car.from_ast_list() {
+                                    Ok(v) => {
+                                        if all_of!(v, is_symbol) {
+                                            // TODO: List<Value>? Vec<String>?
+                                            v.into_iter().map(|v| v.as_symbol()).collect::<Result<Vec<String>, _>>()?
+                                        } else {
+                                            runtime_error!("bad syntax-rules form: keywords must be all symbols {}", bad_macro_msg)
+                                        }
+                                    },
+                                    Err(_) => runtime_error!("bad syntax-rules form: keywords must be list {}", bad_macro_msg),
+                                };
+                                let ellipsis = String::from("...");
+                                if keywords.contains(&ellipsis) {
+                                    runtime_error!("bad syntax-rules form: ellipsis not allowed in keywords");
+                                }
+                                // 2. rules
+                                // note: when expansion, we should first eval to ast, then eval it
+                                let mut rules: Vec<SyntaxRule> = Vec::new();
+                                for v in cdr.into_iter() {
+                                    let msg = format!("{:?}", v);
+                                    match v.from_ast_list() {
+                                        Ok(l) => {
+                                            if l.len() != 2 {
+                                                runtime_error!("bad syntax-rules form: rule must be list(# = 2) {}", msg);
+                                            } else {
+                                                let (pat, tmpl) = l.unpack2()?;
+                                                let pat = pat.from_ast_list()?;
+                                                let tmpl = tmpl.from_ast_list()?;
+                                                // 1. verify pattern
+                                                // _ placeholder for macro name, omit it
+                                                let (_, pat) = shift_or_error!(pat, "bad syntax-rule pattern: must supply at least 1 pattern argument(aka. macro itself)");
+                                                verify_syntax_pattern(&pat)?;
+                                                // 2. reform pattern
+                                                let pat = PatternElement::from_ast_list(pat, &keywords)?;
+                                                // 3. verify template
+                                                verify_syntax_pattern(&tmpl)?;
+                                                // 4. make rule
+                                                rules.push(SyntaxRule(pat, tmpl))
+                                            }
+                                        },
+                                        Err(_) => runtime_error!("bad syntax-rules form: rule must be list(# = 2) {}", msg),
+                                    }
+                                };
+                                // temporary macro object
+                                let makro = Value::Macro(String::from("#macro"), keywords, rules, env);
+                                Ok(Trampoline::Value(makro, *next))
                             },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next))
                         }
@@ -884,6 +1105,16 @@ impl Continuation {
                         }
                     },
                     _ => runtime_error!("impossible! unquote-splicing outside of quasiquote"),
+                }
+            },
+            Continuation::EvaluateMacroDefine(name, env, next) => {
+                match val {
+                    Value::Macro(_, keywords, rules, lenv) => {
+                        let val = Value::Macro(name.clone(), keywords, rules, lenv);
+                        env.borrow_mut().define(name, val);
+                        Ok(Trampoline::Value(Value::Unspecified, *next))
+                    },
+                    _ => runtime_error!("value not macro: {:?}", val),
                 }
             },
             Continuation::Return => Ok(Trampoline::Off(val))
@@ -1034,7 +1265,7 @@ fn primitive_set_car(args: List<Value>) -> Result<Value, RuntimeError> {
     }
     let (x, y) = args.unpack2()?;
     if x.is_pair() {
-        let mut p = x.to_pair()?;
+        let mut p = x.as_pair()?;
         p.set_car(y);
         Ok(Value::Unspecified)
     } else {
@@ -1048,7 +1279,7 @@ fn primitive_set_cdr(args: List<Value>) -> Result<Value, RuntimeError> {
     }
     let (x, y) = args.unpack2()?;
     if x.is_pair() {
-        let mut p = x.to_pair()?;
+        let mut p = x.as_pair()?;
         p.set_cdr(y);
         Ok(Value::Unspecified)
     } else {
@@ -1069,11 +1300,11 @@ where F: Fn(T, T) -> T,
     })
 }
 fn primitive_plus_i(args: List<Value>) -> Result<Value, RuntimeError> {
-    let r = fold_values(args, 0, |acc, x| acc + x, |x| x.to_integer())?;
+    let r = fold_values(args, 0, |acc, x| acc + x, |x| x.as_integer())?;
     Ok(Value::Integer(r))
 }
 fn primitive_plus_f(args: List<Value>) -> Result<Value, RuntimeError> {
-    let r = fold_values(args, 0.0, |acc, x| acc + x, |x| x.to_float())?;
+    let r = fold_values(args, 0.0, |acc, x| acc + x, |x| x.as_float())?;
     Ok(Value::Float(r))
 }
 fn primitive_minus_i(args: List<Value>) -> Result<Value, RuntimeError> {
@@ -1081,7 +1312,7 @@ fn primitive_minus_i(args: List<Value>) -> Result<Value, RuntimeError> {
         runtime_error!("wrong number of args to `-': 2 expected, {} got", args.len())
     }
     let (x, y) = args.unpack2()?;
-    let r = x.to_integer()? - y.to_integer()?;
+    let r = x.as_integer()? - y.as_integer()?;
     Ok(Value::Integer(r))
 }
 fn primitive_minus_f(args: List<Value>) -> Result<Value, RuntimeError> {
@@ -1089,15 +1320,15 @@ fn primitive_minus_f(args: List<Value>) -> Result<Value, RuntimeError> {
         runtime_error!("wrong number of args to `-': 2 expected, {} got", args.len())
     }
     let (x, y) = args.unpack2()?;
-    let r = x.to_float()? - y.to_float()?;
+    let r = x.as_float()? - y.as_float()?;
     Ok(Value::Float(r))
 }
 fn primitive_mul_i(args: List<Value>) -> Result<Value, RuntimeError> {
-    let r = fold_values(args, 1, |acc, x| acc * x, |x| x.to_integer())?;
+    let r = fold_values(args, 1, |acc, x| acc * x, |x| x.as_integer())?;
     Ok(Value::Integer(r))
 }
 fn primitive_mul_f(args: List<Value>) -> Result<Value, RuntimeError> {
-    let r = fold_values(args, 1.0, |acc, x| acc * x, |x| x.to_float())?;
+    let r = fold_values(args, 1.0, |acc, x| acc * x, |x| x.as_float())?;
     Ok(Value::Float(r))
 }
 fn primitive_div_i(args: List<Value>) -> Result<Value, RuntimeError> {
@@ -1105,7 +1336,7 @@ fn primitive_div_i(args: List<Value>) -> Result<Value, RuntimeError> {
         runtime_error!("wrong number of args to `/': 2 expected, {} got", args.len())
     }
     let (x, y) = args.unpack2()?;
-    let r = x.to_integer()? / y.to_integer()?;
+    let r = x.as_integer()? / y.as_integer()?;
     Ok(Value::Integer(r))
 }
 fn primitive_div_f(args: List<Value>) -> Result<Value, RuntimeError> {
@@ -1113,7 +1344,7 @@ fn primitive_div_f(args: List<Value>) -> Result<Value, RuntimeError> {
         runtime_error!("wrong number of args to `/': 2 expected, {} got", args.len())
     }
     let (x, y) = args.unpack2()?;
-    let r = x.to_float()? / y.to_float()?;
+    let r = x.as_float()? / y.as_float()?;
     Ok(Value::Float(r))
 }
 fn compare_numeric<T, F, H>(args: List<Value>, f: &str, op: F, tr: H) -> Result<Value, RuntimeError>
@@ -1127,34 +1358,34 @@ where F: Fn(T, T) -> bool,
     Ok(Value::Boolean(ret))
 }
 fn primitive_eq_i(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, "=", |x, y| x == y, |x| x.to_integer())
+    compare_numeric(args, "=", |x, y| x == y, |x| x.as_integer())
 }
 fn primitive_eq_f(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, "=", |x, y| x == y, |x| x.to_float())
+    compare_numeric(args, "=", |x, y| x == y, |x| x.as_float())
 }
 fn primitive_gt_i(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, ">", |x, y| x > y, |x| x.to_integer())
+    compare_numeric(args, ">", |x, y| x > y, |x| x.as_integer())
 }
 fn primitive_gt_f(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, ">", |x, y| x > y, |x| x.to_float())
+    compare_numeric(args, ">", |x, y| x > y, |x| x.as_float())
 }
 fn primitive_le_i(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, "<=", |x, y| x <= y, |x| x.to_integer())
+    compare_numeric(args, "<=", |x, y| x <= y, |x| x.as_integer())
 }
 fn primitive_le_f(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, "<=", |x, y| x <= y, |x| x.to_float())
+    compare_numeric(args, "<=", |x, y| x <= y, |x| x.as_float())
 }
 fn primitive_lt_i(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, "<", |x, y| x < y, |x| x.to_integer())
+    compare_numeric(args, "<", |x, y| x < y, |x| x.as_integer())
 }
 fn primitive_lt_f(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, "<", |x, y| x < y, |x| x.to_float())
+    compare_numeric(args, "<", |x, y| x < y, |x| x.as_float())
 }
 fn primitive_ge_i(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, ">=", |x, y| x >= y, |x| x.to_float())
+    compare_numeric(args, ">=", |x, y| x >= y, |x| x.as_float())
 }
 fn primitive_ge_f(args: List<Value>) -> Result<Value, RuntimeError> {
-    compare_numeric(args, ">=", |x, y| x >= y, |x| x.to_float())
+    compare_numeric(args, ">=", |x, y| x >= y, |x| x.as_float())
 }
 
 fn primitive_display(args: List<Value>) -> Result<Value, RuntimeError> {
@@ -1186,34 +1417,31 @@ fn primitive_error(args: List<Value>) -> Result<Value, RuntimeError> {
     runtime_error!("{}", msg)
 }
 
-macro_rules! all_of {
-    ($args:ident, $pred:ident) => {
-        $args.iter().all(|v| v.$pred())
-    };
-}
-
 fn primitive_eqv(args: List<Value>) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         runtime_error!("wrong number of args to `eqv?': 2 expected, {} got", args.len())
     }
     if all_of!(args, is_boolean) {
         let (x, y) = args.unpack2()?;
-        Ok(Value::Boolean(x.to_bool()? == y.to_bool()?))
+        Ok(Value::Boolean(x.as_bool()? == y.as_bool()?))
     } else if all_of!(args, is_symbol) {
         let (x, y) = args.unpack2()?;
-        Ok(Value::Boolean(x.to_symbol()? == y.to_symbol()?))
+        Ok(Value::Boolean(x.as_symbol()? == y.as_symbol()?))
     } else if all_of!(args, is_integer) {
         let (x, y) = args.unpack2()?;
-        Ok(Value::Boolean(x.to_integer()? == y.to_integer()?))
+        Ok(Value::Boolean(x.as_integer()? == y.as_integer()?))
     } else if all_of!(args, is_char) {
         let (x, y) = args.unpack2()?;
-        Ok(Value::Boolean(x.to_char()? == y.to_char()?))
+        Ok(Value::Boolean(x.as_char()? == y.as_char()?))
     } else if all_of!(args, is_nil) {
         let (x, y) = args.unpack2()?;
         Ok(Value::Boolean(true))
+    } else if all_of!(args, is_string) {
+        let (x, y) = args.unpack2()?;
+        Ok(Value::Boolean(x.as_string()? == y.as_string()?))
     } else if all_of!(args, is_pair) {
         let (x, y) = args.unpack2()?;
-        Ok(Value::Boolean(x.to_pair()? == y.to_pair()?))
+        Ok(Value::Boolean(x.as_pair()? == y.as_pair()?))
         // TODO: procedures eqv? by define location
     } else {
         Ok(Value::Boolean(false))
@@ -1370,7 +1598,7 @@ mod tests {
         let v: Vec<i64> = vec![1, 2, 3];
         let args = v.into_iter().map(|x| Value::Integer(x)).collect::<List<_>>();
         let ret = primitive_plus_i(args).unwrap();
-        assert_eq!(ret.to_integer().unwrap(), 6);
+        assert_eq!(ret.as_integer().unwrap(), 6);
     }
 
     #[test]
@@ -1378,7 +1606,7 @@ mod tests {
         let v: Vec<i64> = vec![4, 2, 3];
         let args = v.into_iter().map(|x| Value::Integer(x)).collect::<List<_>>();
         let ret = call_primitive("*", args).unwrap();
-        assert_eq!(ret.to_integer().unwrap(), 24);
+        assert_eq!(ret.as_integer().unwrap(), 24);
     }
     
     #[test]
@@ -1445,77 +1673,77 @@ mod tests {
     fn test_if_1() {
         let prog = "(if (> 1 2) 3 4)";
         let ret = exec(prog).unwrap();
-        assert_eq!(ret.to_integer().unwrap(), 4);
+        assert_eq!(ret.as_integer().unwrap(), 4);
     }
     
     #[test]
     fn test_if_2() {
         let prog = "(if ((if (> 5 4) > <) (+ 1 2) 2) (+ 5 7 8) (+ 9 10 11))";
         let ret = exec(prog).unwrap();
-        assert_eq!(ret.to_integer().unwrap(), 20);
+        assert_eq!(ret.as_integer().unwrap(), 20);
     }
     
     #[test]
     fn test_if_3() {
         let prog = "(if 0 3 4)";
         let ret = exec(prog).unwrap();
-        assert_eq!(ret.to_integer().unwrap(), 3);
+        assert_eq!(ret.as_integer().unwrap(), 3);
     }
     
     #[test]
     fn test_multiple_statements() {
         let prog = "(+ 1 2) (+ 3 4) ; => 7";
         let ret = exec(prog).unwrap();
-        assert_eq!(ret.to_integer().unwrap(), 7);
+        assert_eq!(ret.as_integer().unwrap(), 7);
     }
     
     #[test]
     fn test_define() {
         let prog = "(define x 2) (+ x x) ; => 4";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 4);
+        assert_eq!(ret.as_integer().unwrap(), 4);
     }
     
     #[test]
     fn test_set() {
         let prog = "(define x 2) (set! x 3) (+ x x) ; => 6";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 6);
+        assert_eq!(ret.as_integer().unwrap(), 6);
     }
     
     #[test]
     fn test_lambda() {
         let prog = "((lambda (x) (+ x 2)) 3) ; => 5";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 5);
+        assert_eq!(ret.as_integer().unwrap(), 5);
     }
     
     #[test]
     fn test_lambda_symbol() {
         let prog = "((λ (x) (+ x 2)) 3) ; => 5";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 5);
+        assert_eq!(ret.as_integer().unwrap(), 5);
     }
     
     #[test]
     fn test_define_func() {
         let prog = "(define (f x) (+ x 2)) (f 3) ; => 5";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 5);
+        assert_eq!(ret.as_integer().unwrap(), 5);
     }
     
     #[test]
     fn test_define_func2() {
         let prog =  "(define (noop) (+ 0 0)) (define (f x) (noop) (+ x 2)) ((lambda () (f 3))) ; => 5";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 5);
+        assert_eq!(ret.as_integer().unwrap(), 5);
     }
     
     #[test]
     fn test_define_func3() {
         let prog = "(define (plus-or-mul op . args) (apply op args)) (plus-or-mul * 1 2 3) ; => 6";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 6);
+        assert_eq!(ret.as_integer().unwrap(), 6);
     }
     
     #[test]
@@ -1523,7 +1751,7 @@ mod tests {
         let prog = "(quote (1 2)) ; => (1 2)";
         let ret = exec_ok(prog);
         println!("{}", ret);
-        let p = ret.to_pair().unwrap();
+        let p = ret.as_pair().unwrap();
         assert!(p.is_list());
     }
     
@@ -1531,41 +1759,41 @@ mod tests {
     fn test_apply() {
         let prog = "(apply + (quote (1 2 3))) ; => 6";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 6);
+        assert_eq!(ret.as_integer().unwrap(), 6);
     }
     
     #[test]
     fn test_begin() {
         let prog = "(define x 1) (begin (set! x 5) (set! x (+ x 2)) x) ; => 7";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 7);
+        assert_eq!(ret.as_integer().unwrap(), 7);
     }
     
     #[test]
     fn test_eval_1() {
         let prog = "(eval (quote (+ 1 2))) ; => 3";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 3);
+        assert_eq!(ret.as_integer().unwrap(), 3);
     }
     
     #[test]
     fn test_eval_2() {
         let prog = "(define (foo x) (eval (quote (+ 1 2))) x) (foo 5) ; => 5";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 5);
+        assert_eq!(ret.as_integer().unwrap(), 5);
     }
     
     #[test]
     fn test_quasiquoting_1() {
         let prog = "(apply + (quasiquote (2 (unquote (+ 1 2)) 4))) ; => 9";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 9);
+        assert_eq!(ret.as_integer().unwrap(), 9);
     }
     
     #[test]
     fn test_quasiquoting_2() {
         let prog = "(apply + `(2 ,(+ 1 2) ,@(list 1 2 3) 4)) ; => 15";
         let ret = exec_ok(prog);
-        assert_eq!(ret.to_integer().unwrap(), 15);
+        assert_eq!(ret.as_integer().unwrap(), 15);
     }
 }

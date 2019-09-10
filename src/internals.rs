@@ -84,6 +84,17 @@ impl<T> List<T> {
             _ => None,
         }
     }
+    pub fn shift2(self) -> Option<(T, T, Self)> {
+        match self {
+            List::Cons(h1, t1) => {
+                match *t1 {
+                    List::Cons(h2, t2) => Some((*h1, *h2, *t2)),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
 
     pub fn unshift(self, head: T) -> Self {
         List::Cons(Box::new(head), Box::new(self))

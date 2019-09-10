@@ -15,7 +15,6 @@ use rustyline::{
     KeyPress,
     Cmd,
 };
-//use rustyline_derive::Helper;
 
 use crate::internals::List;
 use crate::lexer::{Token, Position, Lexer};
@@ -31,7 +30,6 @@ enum State {
     Err(Box<dyn StdError>),
 }
 
-//#[derive(Helper)]
 struct ReplHelper {
     completer: ReplCompleter,
     highlighter: MatchingBracketHighlighter,
