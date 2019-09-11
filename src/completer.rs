@@ -105,6 +105,7 @@ impl Completer for ReplCompleter {
         } else {
             let (start, symbol) = extract_symbol(line, pos, &self.break_chars);
             let mut specials: Vec<String> = SpecialForm::iter().map(|v| v.to_string()).collect();
+            // TODO: extras
             specials.push("call-with-current-continuation".to_string());
             let env_symbols = self.env.borrow()
                 .values()

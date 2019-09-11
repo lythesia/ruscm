@@ -99,7 +99,7 @@ pub enum SpecialForm {
     // TODO: And, Or
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum PatternElement {
     // datum
     String(String),
@@ -112,6 +112,31 @@ enum PatternElement {
     Symbol(String),
     VariadicSymbol(String),
     SubPattern(List<PatternElement>),
+}
+
+#[derive(Clone, PartialEq)]
+enum Match {
+    Best,
+    Normal,
+    Not,
+}
+
+impl Match {
+    pub fn best(b: bool) -> Match {
+        if b {
+            Match::Best
+        } else {
+            Match::Not
+        }
+    }
+    
+    pub fn normal(b: bool) -> Match {
+        if b {
+            Match::Normal
+        } else {
+            Match::Not
+        }
+    }
 }
 
 impl PatternElement {
@@ -140,6 +165,53 @@ impl PatternElement {
             n => Self::from_ast_node(n, keywords),
         }).collect::<Result<List<_>, _>>()
     }
+    
+    pub fn match_with_value(&self, val: &Value, env: &Rc<RefCell<Env>>) -> Match {
+        match self {
+            PatternElement::String(ref v) => Match::best(val.is_string_with(v)),
+            PatternElement::Character(v) => Match::best(val.is_char_with(*v)),
+            PatternElement::Boolean(v) => Match::best(val.is_boolean_with(*v)),
+            PatternElement::Integer(v) => Match::best(val.is_integer_with(*v)),
+            PatternElement::Float(v) => Match::best(val.is_float_with(*v)),
+            PatternElement::Keyword(ref v) => Match::best(val.is_symbol_with(v) && !env.borrow().is_defined(v)),
+            PatternElement::Symbol(_) | PatternElement::VariadicSymbol(_) => Match::Normal,
+            PatternElement::SubPattern(ref v) => {
+                match val {
+                    Value::DatumList(ref l) => Self::pattern_match(v, l, env),
+                    _ => Match::Not,
+                }
+            },
+        }
+    }
+    
+    pub fn pattern_match(pat: &List<PatternElement>, args: &List<Value>, env: &Rc<RefCell<Env>>) -> Match {
+        let mut i = pat.iter();
+        let mut j = args.iter();
+        let mut m = Match::Best;
+        loop {
+            match (i.next(), j.next()) {
+                (Some(x), Some(y)) => match x {
+                    PatternElement::VariadicSymbol(_) => return Match::Normal,
+                    _ => match x.match_with_value(y, env) {
+                        Match::Best => continue,
+                        Match::Normal => {
+                            m = Match::Normal;
+                            continue
+                        },
+                        Match::Not => return Match::Not,
+                    },
+                },
+                (Some(x), None) => match x {
+                    PatternElement::VariadicSymbol(_) => return Match::Normal,
+                    _ => return Match::Not,
+                },
+                (None, Some(y)) => return Match::Not,
+                (None, None) => break,
+            }
+        };
+        m
+    }
+
 }
 
 #[derive(Clone)]
@@ -172,7 +244,7 @@ pub enum Value {
     ),
     Macro(
         String,             // name: for display only TODO: really need?
-        Vec<String>,        // keywords
+        Vec<String>,        // keywords TODO: no need
         Vec<SyntaxRule>,    // match arms
         Rc<RefCell<Env>>,   // defining lexical scope(lenv)
     ),
@@ -310,10 +382,24 @@ impl Value {
             _ => false,
         }
     }
+    
+    pub fn is_integer_with(&self, i: i64) -> bool {
+        match self {
+            Value::Integer(v) => *v == i,
+            _ => false,
+        }
+    }
 
     pub fn is_float(&self) -> bool {
         match self {
             Value::Float(_) => true,
+            _ => false,
+        }
+    }
+    
+    pub fn is_float_with(&self, f: f64) -> bool {
+        match self {
+            Value::Float(v) => *v == f,
             _ => false,
         }
     }
@@ -328,10 +414,24 @@ impl Value {
             _ => false,
         }
     }
+    
+    pub fn is_string_with(&self, s: &str) -> bool {
+        match self {
+            Value::String(ref v) => v == s,
+            _ => false,
+        }
+    }
 
     pub fn is_char(&self) -> bool {
         match self {
             Value::Character(_) => true,
+            _ => false,
+        }
+    }
+    
+    pub fn is_char_with(&self, c: char) -> bool {
+        match self {
+            Value::Character(v) => *v == c,
             _ => false,
         }
     }
@@ -353,6 +453,13 @@ impl Value {
     pub fn is_boolean(&self) -> bool {
         match self {
             Value::Boolean(_) => true,
+            _ => false,
+        }
+    }
+    
+    pub fn is_boolean_with(&self, b: bool) -> bool {
+        match self {
+            Value::Boolean(v) => *v == b,
             _ => false,
         }
     }
@@ -588,6 +695,17 @@ impl Env {
                 Some(ref p) => p.borrow().get(key),
                 _ => None,
             },
+        }
+    }
+    
+    pub fn is_defined(&self, key: &String) -> bool {
+        if self.values.contains_key(key) {
+            true
+        } else {
+            match self.outer {
+                Some(ref p) => p.borrow().is_defined(key),
+                _ => false
+            }
         }
     }
 
@@ -999,9 +1117,8 @@ impl Continuation {
                                             if l.len() != 2 {
                                                 runtime_error!("bad syntax-rules form: rule must be list(# = 2) {}", msg);
                                             } else {
-                                                let (pat, tmpl) = l.unpack2()?;
+                                                let (pat, tmpl) = l.shift().unwrap();
                                                 let pat = pat.from_ast_list()?;
-                                                let tmpl = tmpl.from_ast_list()?;
                                                 // 1. verify pattern
                                                 // _ placeholder for macro name, omit it
                                                 let (_, pat) = shift_or_error!(pat, "bad syntax-rule pattern: must supply at least 1 pattern argument(aka. macro itself)");
@@ -1011,6 +1128,7 @@ impl Continuation {
                                                 // 3. verify template
                                                 verify_syntax_pattern(&tmpl)?;
                                                 // 4. make rule
+//                                                println!("rule pattern: {:?}", pat);
                                                 rules.push(SyntaxRule(pat, tmpl))
                                             }
                                         },
@@ -1023,6 +1141,32 @@ impl Continuation {
                             },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next))
                         }
+                    },
+                    // macro
+                    Value::Macro(name, _, rules, lenv) => {
+                        // 1. match
+                        let (bests, normals): (Vec<_>, Vec<_>) = rules.into_iter()
+                            .map(|r| {
+                                let m = PatternElement::pattern_match(&r.0, &operands, &env);
+                                (r, m)
+                            })
+                            .filter(|(_, m)| m != &Match::Not)
+                            .partition(|(_, m)| m == &Match::Best);
+                        if bests.is_empty() && normals.is_empty() {
+                            runtime_error!("failed to match any pattern in #<macro: {}>: {:?}", name, operands);
+                        }
+                        if bests.len() > 1 || normals.len() > 1 {
+                            runtime_error!("multiple patterns can be matched in #<macro: {}>: {:?}", name, operands);
+                        }
+                        let (rule, _) = if !bests.is_empty() {
+                            bests.into_iter().next().unwrap()
+                        } else {
+                            normals.into_iter().next().unwrap()
+                        };
+                        // 2. expand
+                        let expr = expand_macro(rule, operands, &lenv, &env)?;
+                        // 3. eval
+                        eval_expressions(expr, env, next)
                     },
                     // procedure
                     _ => {
@@ -1120,6 +1264,123 @@ impl Continuation {
             Continuation::Return => Ok(Trampoline::Off(val))
         }
     }
+}
+
+fn bind_macro_args(pattern: List<PatternElement>, args: List<Value>, h: &mut HashMap<String, Value>) {
+    let mut i = pattern.into_iter();
+    let mut j = args.into_iter();
+    loop {
+        match (i.next(), j.next()) {
+            (Some(x), Some(y)) => {
+                match x {
+                    PatternElement::Symbol(s) => {
+                        h.insert(s, y);
+                    },
+                    PatternElement::VariadicSymbol(s) => {
+                        let l = j.collect::<List<Value>>().unshift(y);
+                        h.insert(s, Value::DatumList(l));
+                        break
+                    },
+                    PatternElement::SubPattern(sub) => {
+                        match y {
+                            Value::DatumList(l) => bind_macro_args(sub, l, h),
+                            _ => continue, // impossible
+                        }
+                    },
+                    _ => continue, // ignore trivial values
+                }
+            },
+            (Some(x), None) => {
+                match x {
+                    PatternElement::VariadicSymbol(s) => {
+                        h.insert(s, Value::DatumList(List::Nil));
+                    },
+                    _ => continue, // impossible
+                }
+            },
+            (None, Some(_)) => continue, // impossible
+            (None, None) => break,
+        }
+    };
+}
+
+// TODO: for now, #: is not allowed as start of identifier, so ..
+fn gensym(s: &String) -> String {
+    format!("#:{}", s)
+}
+
+fn transform_template(template: List<Value>, tab: &HashMap<String, Value>, renamed: &mut HashMap<String, String>,
+                      lenv: &Rc<RefCell<Env>>, renv: &Rc<RefCell<Env>>) -> Result<List<Value>, RuntimeError> {
+    let mut ret: List<Value> = List::Nil;
+    for var in template {
+        match var {
+            // symbols:
+            // 1. match in pattern table: substitute
+            // 2. bind in lenv, get it from lenv and replace
+            // 3. bind in renv, rename it(gensym)
+            // 4. free, keep it as it is
+            Value::Symbol(s) => {
+                if tab.contains_key(&s) {
+                    let v = tab.get(&s).unwrap().clone();
+                    ret = ret.unshift_r(v);
+                } else if lenv.borrow().is_defined(&s) {
+                    let v = lenv.borrow().get(&s).unwrap();
+                    ret = ret.unshift_r(v);
+                } else if renv.borrow().is_defined(&s) {
+                    let v = match renamed.get(&s) {
+                        Some(v) => Value::Symbol(v.clone()),
+                        _ => {
+                            let ss = gensym(&s);
+                            renamed.insert(s.clone(), ss.clone());
+                            Value::Symbol(ss)
+                        },
+                    };
+                    ret = ret.unshift_r(v);
+                } else {
+                    ret = ret.unshift_r(Value::Symbol(s));
+                }
+            },
+            Value::VariadicSymbol(s) => {
+                if !tab.contains_key(&s) {
+                    runtime_error!("failed to expand macro: unknown pattern {:?}", s);
+                }
+                let v = tab.get(&s).unwrap().clone();
+                match v {
+                    Value::DatumList(l) => {
+                        for i in l {
+                            ret = ret.unshift_r(i);
+                        }
+                    },
+                    _ => runtime_error!("faild to expand macro: varidiac arg must be datum list {:?}", v), // impossible
+                }
+            },
+            Value::DatumList(l) => {
+                let v = transform_template(l, tab, renamed, lenv, renv)?;
+                ret = ret.unshift_r(Value::DatumList(v));
+            },
+            _ => {
+                ret = ret.unshift_r(var);
+            }
+        }
+    }
+//    println!("transformed: {:?}", ret);
+    Ok(ret)
+}
+
+fn expand_macro(rule: SyntaxRule, args: List<Value>,
+                lenv: &Rc<RefCell<Env>>, renv: &Rc<RefCell<Env>>) -> Result<List<Value>, RuntimeError> {
+    let SyntaxRule(pattern, template) = rule;
+    // 1. bind(recursive)
+    let mut h: HashMap<String, Value> = HashMap::new();
+    bind_macro_args(pattern, args, &mut h);
+//    println!("bind macro args:");
+//    for (k, v) in h.iter() {
+//        println!("{}: {:?}", k, v);
+//    }
+    
+    // 2. expand(return new ast tree)
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    transform_template(template, &mut h, &mut renamed, lenv, renv)
 }
 
 fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampoline, RuntimeError> {
@@ -1795,5 +2056,67 @@ mod tests {
         let prog = "(apply + `(2 ,(+ 1 2) ,@(list 1 2 3) 4)) ; => 15";
         let ret = exec_ok(prog);
         assert_eq!(ret.as_integer().unwrap(), 15);
+    }
+    
+    #[test]
+    fn test_macro_1() {
+        let prog = "(define-syntax lst (syntax-rules () ((_ xs ...) (list xs ...)))) (lst) ; => ()";
+        let ret = exec_ok(prog);
+        assert!(ret.is_list());
+        assert_eq!(ret.list_len(), 0 as usize);
+    }
+    
+    #[test]
+    fn test_macro_2() {
+        let prog = "(define-syntax lst (syntax-rules () ((_ xs ...) (list xs ...)))) (lst 1 2 3) ; => (1 2 3)";
+        let ret = exec_ok(prog);
+        assert!(ret.is_list());
+        assert_eq!(ret.list_len(), 3 as usize);
+    }
+    
+    #[test]
+    fn test_macro_3() {
+        let prog = r#"(define-syntax define-matcher-macro
+  (syntax-rules ()
+    ((_ name lit)
+     (define-syntax name
+       (syntax-rules ()
+        ((_ lit) #t)
+        ((_ else) #f))))))
+  (define-matcher-macro is-lit-foo? "foo")
+  (is-lit-foo? "foo")"#;
+        let ret = exec_ok(prog);
+        assert!(ret.as_bool().unwrap());
+    }
+    
+    #[test]
+    fn test_macro_4() {
+        let prog = r#"(define-syntax define-matcher-macro
+  (syntax-rules ()
+    ((_ name lit)
+     (define-syntax name
+       (syntax-rules ()
+        ((_ lit) #t)
+        ((_ else) #f))))))
+  (define-matcher-macro is-lit-foo? "foo")
+  (is-lit-foo? "bar")"#;
+        let ret = exec_ok(prog);
+        assert!(!ret.as_bool().unwrap());
+    }
+    
+    #[test]
+    fn test_macro_5() {
+        let prog = r#"(define-syntax define-matcher-macro
+  (syntax-rules ()
+    ((_ name lit)
+     (define-syntax name
+       (syntax-rules ()
+        ((_ lit) #t)
+        ((_ else) #f))))))
+  (define-matcher-macro is-lit-foo? "foo")
+  (define foo "foo")
+  (is-lit-foo? foo)"#;
+        let ret = exec_ok(prog);
+        assert!(!ret.as_bool().unwrap());
     }
 }
