@@ -220,6 +220,21 @@ where
     }
 }
 
+#[derive(Clone)]
+pub enum RepValue<T> {
+    Val(T),
+    Repeated(Vec<T>),
+}
+
+impl<T> RepValue<T> {
+    pub fn push(&mut self, e: T) {
+        match self {
+            RepValue::Repeated(ref mut v) => v.push(e),
+            _ => (),
+        }
+    }
+}
+
 mod tests {
     use super::*;
     use std::mem;

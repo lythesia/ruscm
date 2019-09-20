@@ -56,3 +56,10 @@ DatumList专用于表达expression, 使用internals::List, 方便处理
 Cons因为set-car!,set-cdr!的存在, 需要使用interior mutability, 但如果所有代码都使用这种方式会造成pattern match hell
 
 缺点: 处理apply和eval时候需要DatumList和Cons的频繁转换, 有没有更好的方法?
+
+### macro
+
+pattern & ellipsis
+
+1. A variable must be used at a depth at least as great as the depth where it was bound. depth: 一个模式变量可以被展开几次, 定义的深度 = 展开的深度
+2. A variable used at a depth greater than its binding depth participates in the innermost iterations

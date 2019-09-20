@@ -1,12 +1,13 @@
 use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
+use std::iter;
 use std::rc::Rc;
 use std::mem;
 use std::str::FromStr; // strum
 
-use crate::internals::List;
+use crate::internals::{List, RepValue};
 use crate::lexer::Lexer;
 use crate::parser::{Parser, AstNode};
 
@@ -99,132 +100,216 @@ pub enum SpecialForm {
     // TODO: And, Or
 }
 
-#[derive(Clone, Debug)]
-enum PatternElement {
-    // datum
-    String(String),
-    Character(char),
-    Boolean(bool),
-    Integer(i64),
-    Float(f64),
-    // pattern
-    Keyword(String),
-    Symbol(String),
-    VariadicSymbol(String),
-    SubPattern(List<PatternElement>),
-}
-
 #[derive(Clone, PartialEq)]
 enum Match {
     Best,
     Normal,
     Not,
 }
-
-impl Match {
-    pub fn best(b: bool) -> Match {
-        if b {
-            Match::Best
+macro_rules! best_or_error {
+    ($pred:expr) => (
+        if $pred {
+            Ok(Match::Best)
         } else {
-            Match::Not
+            Err(Match::Not)
         }
-    }
-    
-    pub fn normal(b: bool) -> Match {
-        if b {
-            Match::Normal
-        } else {
-            Match::Not
-        }
-    }
+    );
 }
-
-impl PatternElement {
-    pub fn from_ast_node(n: Value, keywords: &Vec<String>) -> Result<PatternElement, RuntimeError> {
-        match n {
-            Value::String(v) => Ok(PatternElement::String(v)),
-            Value::Character(v) => Ok(PatternElement::Character(v)),
-            Value::Boolean(v) => Ok(PatternElement::Boolean(v)),
-            Value::Integer(v) => Ok(PatternElement::Integer(v)),
-            Value::Float(v) => Ok(PatternElement::Float(v)),
-            Value::Symbol(v) => {
-                if keywords.contains(&v) {
-                    Ok(PatternElement::Keyword(v))
-                } else {
-                    Ok(PatternElement::Symbol(v))
-                }
-            },
-            Value::VariadicSymbol(v) => Ok(PatternElement::VariadicSymbol(v)),
-            _ => runtime_error!("bad pattern variable: {:?}", n),
+macro_rules! normal_or_error {
+    ($pred:expr) => (
+        if $pred {
+            Ok(Match::Normal)
+        } else {
+            Err(Match::Not)
         }
-    }
-    
-    pub fn from_ast_list(pat: List<Value>, keywords: &Vec<String>) -> Result<List<PatternElement>, RuntimeError> {
-        pat.into_iter().map(|v| match v {
-            Value::DatumList(l) => Self::from_ast_list(l, keywords).map(|v| PatternElement::SubPattern(v)),
-            n => Self::from_ast_node(n, keywords),
-        }).collect::<Result<List<_>, _>>()
-    }
-    
-    pub fn match_with_value(&self, val: &Value, env: &Rc<RefCell<Env>>) -> Match {
-        match self {
-            PatternElement::String(ref v) => Match::best(val.is_string_with(v)),
-            PatternElement::Character(v) => Match::best(val.is_char_with(*v)),
-            PatternElement::Boolean(v) => Match::best(val.is_boolean_with(*v)),
-            PatternElement::Integer(v) => Match::best(val.is_integer_with(*v)),
-            PatternElement::Float(v) => Match::best(val.is_float_with(*v)),
-            PatternElement::Keyword(ref v) => Match::best(val.is_symbol_with(v) && !env.borrow().is_defined(v)),
-            PatternElement::Symbol(_) | PatternElement::VariadicSymbol(_) => Match::Normal,
-            PatternElement::SubPattern(ref v) => {
-                match val {
-                    Value::DatumList(ref l) => Self::pattern_match(v, l, env),
-                    _ => Match::Not,
-                }
-            },
-        }
-    }
-    
-    pub fn pattern_match(pat: &List<PatternElement>, args: &List<Value>, env: &Rc<RefCell<Env>>) -> Match {
-        let mut i = pat.iter();
-        let mut j = args.iter();
-        let mut m = Match::Best;
-        loop {
-            match (i.next(), j.next()) {
-                (Some(x), Some(y)) => match x {
-                    PatternElement::VariadicSymbol(_) => return Match::Normal,
-                    _ => match x.match_with_value(y, env) {
-                        Match::Best => continue,
-                        Match::Normal => {
-                            m = Match::Normal;
-                            continue
-                        },
-                        Match::Not => return Match::Not,
-                    },
-                },
-                (Some(x), None) => match x {
-                    PatternElement::VariadicSymbol(_) => return Match::Normal,
-                    _ => return Match::Not,
-                },
-                (None, Some(y)) => return Match::Not,
-                (None, None) => break,
-            }
-        };
-        m
-    }
-
+    );
 }
 
 #[derive(Clone)]
 pub struct SyntaxRule (
-    List<PatternElement>, // pattern
+    List<Value>, // pattern
     List<Value>, // template (as ast)
 );
+#[derive(Clone)]
+pub struct Macro {
+    name: String, // TODO: need?
+    keywords: Vec<String>,
+    syntax_rules: Vec<SyntaxRule>,
+    def_env: Rc<RefCell<Env>>,
+}
+
+type Matcher = HashMap<String, RepValue<Value>>;
+impl Macro {
+    // find pattern variables in:
+    // 1. patterns/sub-patterns
+    // 2. templates, while in template parsing, `keywords` should not take into account
+    pub fn pattern_variables(pattern: &List<Value>, excludes: &Vec<String>, includes: &Vec<String>) -> HashSet<String> {
+        let mut ret: HashSet<String> = HashSet::new();
+        for v in pattern.iter() {
+            match v {
+                Value::Symbol(ref s) => {
+                    if !excludes.contains(s) && includes.contains(s) {
+                        ret.insert(s.clone());
+                    }
+                },
+                Value::DatumList(ref l) => {
+                    let r = Self::pattern_variables(l, excludes, includes);
+                    ret.extend(r);
+                },
+                Value::VarValue(ref vv) => {
+                    let vv = vv.clone();
+                    match *vv {
+                        Value::Symbol(s) => {
+                            if !excludes.contains(&s) && includes.contains(&s) {
+                                ret.insert(s);
+                            }
+                        },
+                        _ => (),
+                    }
+                },
+                Value::VarList(ref l) => {
+                    let r = Self::pattern_variables(l, excludes, includes);
+                    ret.extend(r);
+                },
+                _ => (),
+            }
+        }
+        ret
+    }
+    
+    fn match_value(&self, pattern: &Value, val: &Value, run_env: &Rc<RefCell<Env>>, depth: usize,
+                   matcher: &mut Matcher) -> Result<Match, Match> {
+        match pattern {
+            // literal
+            Value::String(ref v) => best_or_error!(val.is_string_with(v)),
+            Value::Character(v) => best_or_error!(val.is_char_with(*v)),
+            Value::Boolean(v) => best_or_error!(val.is_boolean_with(*v)),
+            Value::Integer(v) => best_or_error!(val.is_integer_with(*v)),
+            Value::Float(v) => best_or_error!(val.is_float_with(*v)),
+            // keyword | single symbol
+            Value::Symbol(ref v) => {
+                if self.keywords.contains(v) {
+                    best_or_error!(val.is_symbol_with(v) && !run_env.borrow().is_defined(v))
+                } else {
+                    let o = val.clone();
+                    if depth == 0 {
+                        matcher.insert(v.clone(), RepValue::Val(o));
+                    } else {
+                        if let Some(r) = matcher.get_mut(v) {
+                            r.push(o);
+                        } else {
+                            matcher.insert(v.clone(), RepValue::Repeated(vec![o]));
+                        }
+                    }
+                    Ok(Match::Normal)
+                }
+            },
+            // list (sub-pattern)
+            Value::DatumList(ref p) => {
+                match val {
+                    Value::DatumList(ref i) => self.match_list(p, i, run_env, depth, matcher),
+                    _ => Err(Match::Not),
+                }
+            },
+            _ => Err(Match::Not),
+        }
+    }
+    
+    fn match_list(&self, pattern: &List<Value>, input: &List<Value>, run_env: &Rc<RefCell<Env>>, depth: usize,
+                  matcher: &mut Matcher) -> Result<Match, Match> {
+        let np = pattern.len();
+        let mut it = input.iter();
+        let mut mat = Match::Best;
+        
+        for (i, x) in pattern.iter().enumerate() {
+            match x {
+                // variadic literal | symbol
+                // e.g: 2 ... | a ...
+                Value::VarValue(ref p) => {
+                    if i + 1 != np {
+                        return Err(Match::Not);
+                    }
+                    match p.as_ref() {
+                        Value::Symbol(ref s) => {
+                         matcher.insert(s.clone(), RepValue::Repeated(Vec::new()));
+                        },
+                        _ => (),
+                    }
+                    let rest: Vec<Match> = it
+                        .map(|i| self.match_value(p.as_ref(), i, run_env, depth + 1, matcher))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if rest.contains(&Match::Normal) {
+                        mat = Match::Normal;
+                    }
+                    break
+                },
+                // variadic list
+                // e.g: (xx) ...
+                Value::VarList(ref p) => {
+                    if i + 1 != np {
+                        return Err(Match::Not);
+                    }
+                    
+                    let rest: Vec<Match> = it
+                        .map(|i| {
+                            match i {
+                                Value::DatumList(ref l) => self.match_list(p, l, run_env, depth + 1, matcher),
+                                _ => Err(Match::Not),
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if rest.contains(&Match::Normal) {
+                        mat = Match::Normal;
+                    }
+                    break
+                },
+                // literal | symbol
+                _ => match it.next() {
+                    Some(y) => {
+                        if self.match_value(x, y, run_env, depth, matcher)? == Match::Normal {
+                            mat = Match::Normal;
+                        }
+                        continue
+                    },
+                    _ => return Err(Match::Not),
+                },
+            }
+        }
+        Ok(mat)
+    }
+    
+    // only one match allowed
+    pub fn rule_matches(&self, input: &List<Value>, run_env: &Rc<RefCell<Env>>) -> Result<(SyntaxRule, Matcher), RuntimeError> {
+        let (bests, normals): (Vec<_>, Vec<_>) = self.syntax_rules.iter()
+            .map(|rule| {
+                let mut matcher = Matcher::new();
+                self.match_list(&rule.0, input, run_env, 0, &mut matcher).map(|ret| (rule.clone(), matcher, ret))
+            })
+            .filter_map(Result::ok)
+            .partition(|(_, _, m)| m == &Match::Best);
+        if bests.is_empty() && normals.is_empty() {
+            runtime_error!("failed to match any pattern in #<macro: {}>: {:?}", self.name, input);
+        }
+        if bests.len() > 1 || normals.len() > 1 {
+            runtime_error!("multiple patterns can be matched in #<macro: {}>: {:?}", self.name, input);
+        }
+        let (rule, matcher, _) = if !bests.is_empty() {
+            bests.into_iter().next().unwrap()
+        } else {
+            normals.into_iter().next().unwrap()
+        };
+        Ok((rule, matcher))
+    }
+    
+    pub fn rename(&mut self, name: String) {
+        self.name = name;
+    }
+}
 
 #[derive(Clone)]
 pub enum Value {
     Unspecified,
     Symbol(String),
-    VariadicSymbol(String), // for macro
     Boolean(bool),
     Integer(i64),
     Float(f64),
@@ -242,15 +327,13 @@ pub enum Value {
         List<Value>,        // body: clone of rc, ast tree struct, not-evaluated, not-(macro)-expanded, always list
         Rc<RefCell<Env>>,   // env
     ),
-    Macro(
-        String,             // name: for display only TODO: really need?
-        Vec<String>,        // keywords TODO: no need
-        Vec<SyntaxRule>,    // match arms
-        Rc<RefCell<Env>>,   // defining lexical scope(lenv)
-    ),
+    Macro(Macro),
     Continuation(Box<Continuation>),
     // NOTE: only used for constructing ast tree, not an scm object
     DatumList(List<Value>),
+    // for marco pattern matching
+    VarValue(Box<Value>),
+    VarList(List<Value>),
 }
 
 pub struct ConsIter(RRV);
@@ -275,7 +358,6 @@ impl Display for Value {
         match *self {
             Value::Boolean(v) => write!(f, "#{}", if v { "t" } else { "f" }),
             Value::Symbol(ref v) => write!(f, "{}", v),
-            Value::VariadicSymbol(ref v) => write!(f, "{} ...", v),
             Value::Integer(v) => write!(f, "{}", v),
             Value::Float(v) => write!(f, "{}", v),
             Value::Character(v) => write!(f, "{}", v),
@@ -294,8 +376,10 @@ impl Display for Value {
             Value::SpecialForm(ref v) => write!(f, "#<special form: {}>", v.to_string()),
             Value::Primitive(ref v) => write!(f, "#<primitive procedure: {}>", v),
             Value::Procedure(ref v, _, _) => write!(f, "#<procedure: [{}]>", v.join(", ")),
-            Value::Macro(ref v, _, _, _) => write!(f, "#<macro: {}>", v),
+            Value::Macro(ref v) => write!(f, "#<macro: {}>", v.name),
             Value::Continuation(_) => write!(f, "#<continuation>"),
+            Value::VarValue(ref v) => write!(f, "{} ...", v),
+            Value::VarList(ref v) => write!(f, "{} ...", v),
         }
     }
 }
@@ -473,7 +557,7 @@ impl Value {
 
     pub fn is_macro(&self) -> bool {
         match self {
-            Value::Macro(_, _, _, _) => true,
+            Value::Macro(_) => true,
             _ => false,
         }
     }
@@ -622,10 +706,13 @@ pub fn from_ast_nodes(l: &List<AstNode>) -> List<Value> {
     let n = nl.len();
     if n >= 2 {
         let (x, y) = (&nl[n-2], &nl[n-1]);
-        if x.is_symbol() && y.is_symbol_with("...") {
-            let xs = x.clone().as_symbol().unwrap();
+        if y.is_symbol_with("...") {
+            let var = match x {
+                Value::DatumList(l) => Value::VarList(l.clone()),
+                v => Value::VarValue(Box::new(v.clone())),
+            };
             nl.truncate(n-2);
-            nl.push(Value::VariadicSymbol(xs));
+            nl.push(var);
         }
     }
     nl.into_iter().collect::<List<Value>>()
@@ -823,7 +910,6 @@ pub enum Continuation {
 //    ),
 }
 
-// utils
 // (p1 p2 . p3)
 fn verify_lambda_params(params: &Vec<String>) -> Result<(), RuntimeError> {
     let np = params.iter().filter(|&s| s == ".").count();
@@ -851,36 +937,18 @@ fn make_lambda(params: Vec<String>, body: List<Value>, env: Rc<RefCell<Env>>) ->
     Ok(Value::Procedure(params, body, env))
 }
 
-fn verify_syntax_pattern(pat: &List<Value>) -> Result<(), RuntimeError> {
-    let n = pat.len();
-    if n == 0 {
-        return Ok(());
-    } else {
-        for v in pat.iter() {
-            match v {
-                Value::DatumList(ref l) => verify_syntax_pattern(l)?,
-                _ => (),
-            }
+fn verify_macro_syntax(pattern: &List<Value>, depth: usize) -> Result<(), RuntimeError> {
+    for p in pattern.iter() {
+        match p {
+            Value::VarValue(_) | Value::VarList(_) => {
+                if depth > 0 {
+                    runtime_error!("nested ellipsis(...) not supported in macro pattern: {:?}", pattern);
+                }
+            },
+            _ => (),
         }
     }
-    let ellipsis = "...";
-    match pat.iter().position(|v| v.is_symbol_with(ellipsis)) {
-        Some(i) => {
-            if i != n - 1 {
-                runtime_error!("bad pattern: ellipsis must be the last {:?}", pat)
-            } else if n == 1 {
-                runtime_error!("bad pattern: missing pattern variable before ellipsis {:?}", pat)
-            } else { // n > 1
-                let v = pat.iter().nth(n-2).unwrap();
-                if !v.is_symbol() {
-                    runtime_error!("bad pattern: ellipsis must be prefixed with symbol {:?}", pat)
-                } else {
-                    Ok(())
-                }
-            }
-        },
-        _ => Ok(()),
-    }
+    Ok(())
 }
 // end utils
 
@@ -898,8 +966,6 @@ impl Continuation {
             _ => false,
         }
     }
-    
-    // TODO: pub fn is_macroexp_mode(&self) -> bool
     
     pub fn run(self, val: Value) -> Result<Trampoline, RuntimeError> {
         match self {
@@ -1084,7 +1150,7 @@ impl Continuation {
                             // ; pattern = (pat ...) | (pat pat ... pat) | (pat ... pat ellipsis)
                             // ; template = (elem ...) | (elem elem ... tmpl) |
                             // 1. pat cannot be ellipsis; 2. ellipsis must be the last of enclosing list; 3. dot not allowed
-                            // 4. e ... match 0 or more
+                            // 4. e ... match 0 or more; 5. nested ... not supported
                             SpecialForm::SyntaxRules => {
                                 if !next.is_macrodef_mode() {
                                     runtime_error!("bad syntax-rules form: outside of define-syntax form {:?}", operands);
@@ -1095,7 +1161,6 @@ impl Continuation {
                                 let keywords: Vec<String> = match car.from_ast_list() {
                                     Ok(v) => {
                                         if all_of!(v, is_symbol) {
-                                            // TODO: List<Value>? Vec<String>?
                                             v.into_iter().map(|v| v.as_symbol()).collect::<Result<Vec<String>, _>>()?
                                         } else {
                                             runtime_error!("bad syntax-rules form: keywords must be all symbols {}", bad_macro_msg)
@@ -1117,18 +1182,15 @@ impl Continuation {
                                             if l.len() != 2 {
                                                 runtime_error!("bad syntax-rules form: rule must be list(# = 2) {}", msg);
                                             } else {
-                                                let (pat, tmpl) = l.shift().unwrap();
-                                                let pat = pat.from_ast_list()?;
-                                                // 1. verify pattern
+                                                let (pat, tmpl) = l.shift().unwrap(); // make tmpl as expressions
+                                                let pat: List<Value> = pat.from_ast_list()?; // to_list
                                                 // _ placeholder for macro name, omit it
                                                 let (_, pat) = shift_or_error!(pat, "bad syntax-rule pattern: must supply at least 1 pattern argument(aka. macro itself)");
-                                                verify_syntax_pattern(&pat)?;
-                                                // 2. reform pattern
-                                                let pat = PatternElement::from_ast_list(pat, &keywords)?;
-                                                // 3. verify template
-                                                verify_syntax_pattern(&tmpl)?;
-                                                // 4. make rule
+                                                // verify
+                                                verify_macro_syntax(&pat, 0)?;
+                                                verify_macro_syntax(&tmpl, 0)?;
 //                                                println!("rule pattern: {:?}", pat);
+//                                                println!("rule template: {:?}", tmpl);
                                                 rules.push(SyntaxRule(pat, tmpl))
                                             }
                                         },
@@ -1136,35 +1198,24 @@ impl Continuation {
                                     }
                                 };
                                 // temporary macro object
-                                let makro = Value::Macro(String::from("#macro"), keywords, rules, env);
-                                Ok(Trampoline::Value(makro, *next))
+                                let makro = Macro {
+                                    name: String::from("#macro"),
+                                    keywords,
+                                    syntax_rules: rules,
+                                    def_env: env,
+                                };
+                                Ok(Trampoline::Value(Value::Macro(makro), *next))
                             },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next))
                         }
                     },
                     // macro
-                    Value::Macro(name, _, rules, lenv) => {
+                    Value::Macro(makro) => {
                         // 1. match
-                        let (bests, normals): (Vec<_>, Vec<_>) = rules.into_iter()
-                            .map(|r| {
-                                let m = PatternElement::pattern_match(&r.0, &operands, &env);
-                                (r, m)
-                            })
-                            .filter(|(_, m)| m != &Match::Not)
-                            .partition(|(_, m)| m == &Match::Best);
-                        if bests.is_empty() && normals.is_empty() {
-                            runtime_error!("failed to match any pattern in #<macro: {}>: {:?}", name, operands);
-                        }
-                        if bests.len() > 1 || normals.len() > 1 {
-                            runtime_error!("multiple patterns can be matched in #<macro: {}>: {:?}", name, operands);
-                        }
-                        let (rule, _) = if !bests.is_empty() {
-                            bests.into_iter().next().unwrap()
-                        } else {
-                            normals.into_iter().next().unwrap()
-                        };
+                        let (SyntaxRule(_, template), matcher) = makro.rule_matches(&operands, &env)?;
                         // 2. expand
-                        let expr = expand_macro(rule, operands, &lenv, &env)?;
+                        let mut renamed: HashMap<String, String> = HashMap::new();
+                        let expr = transform_template(template, &matcher, &makro.def_env, &env, &mut renamed)?;
                         // 3. eval
                         eval_expressions(expr, env, next)
                     },
@@ -1185,6 +1236,9 @@ impl Continuation {
                 Ok(Trampoline::Value(Value::Unspecified, *next))
             },
             Continuation::EvaluateSet(var_name, env, next) => {
+                if val.is_macro() {
+                    runtime_error!("macro cannot be set: {:?}", val);
+                }
                 env.borrow_mut().set(var_name, val)?;
                 Ok(Trampoline::Value(Value::Unspecified, *next))
             },
@@ -1235,7 +1289,7 @@ impl Continuation {
                 }
                 let l = val.to_list()?;
                 // val is cons list, we need to unpack it
-                // next is ContinuaQuasiExpand
+                // next is ContinueQuasiExpand
                 match *next {
                     Continuation::ContinueQuasiExpand(_, rest, acc, env, next_k) => {
                         if l.is_nil() {
@@ -1253,8 +1307,9 @@ impl Continuation {
             },
             Continuation::EvaluateMacroDefine(name, env, next) => {
                 match val {
-                    Value::Macro(_, keywords, rules, lenv) => {
-                        let val = Value::Macro(name.clone(), keywords, rules, lenv);
+                    Value::Macro(mut makro) => {
+                        makro.rename(name.clone());
+                        let val = Value::Macro(makro);
                         env.borrow_mut().define(name, val);
                         Ok(Trampoline::Value(Value::Unspecified, *next))
                     },
@@ -1266,42 +1321,66 @@ impl Continuation {
     }
 }
 
-fn bind_macro_args(pattern: List<PatternElement>, args: List<Value>, h: &mut HashMap<String, Value>) {
-    let mut i = pattern.into_iter();
-    let mut j = args.into_iter();
-    loop {
-        match (i.next(), j.next()) {
-            (Some(x), Some(y)) => {
-                match x {
-                    PatternElement::Symbol(s) => {
-                        h.insert(s, y);
-                    },
-                    PatternElement::VariadicSymbol(s) => {
-                        let l = j.collect::<List<Value>>().unshift(y);
-                        h.insert(s, Value::DatumList(l));
-                        break
-                    },
-                    PatternElement::SubPattern(sub) => {
-                        match y {
-                            Value::DatumList(l) => bind_macro_args(sub, l, h),
-                            _ => continue, // impossible
-                        }
-                    },
-                    _ => continue, // ignore trivial values
+fn transform_repeated(expr: &Value, replace: &HashMap<String, Vec<Value>>, n: usize,
+                      lenv: &Rc<RefCell<Env>>, renv: &Rc<RefCell<Env>>,
+                      renamed: &mut HashMap<String, String>) -> Result<Vec<Value>, RuntimeError> {
+    // expr can only be: symbol | literal | list
+    match expr {
+        Value::Boolean(_) | Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Character(_) => {
+            let vec = iter::repeat(expr.clone()).take(n).collect::<Vec<Value>>();
+            Ok(vec)
+        },
+        Value::Symbol(ref s) => {
+            match replace.get(s) {
+                Some(v) => {
+                    if v.len() == n {
+                        Ok(v.clone())
+                    } else {
+                        runtime_error!("failed to expand macro: # of {:?} must be {}", expr, n);
+                    }
+                },
+                _ => {
+                    let v = lenv.borrow().get(s)
+                        .or_else(|| {
+                            // rename, theoretically it should not appear in variadic pattern
+                            renv.borrow().get(s).map(|_| {
+                                let val = match renamed.get(s) {
+                                    Some(ss) => Value::Symbol(ss.clone()),
+                                    _ => {
+                                        let ss = gensym(s);
+                                        renamed.insert(s.clone(), ss.clone());
+                                        Value::Symbol(ss)
+                                    },
+                                };
+                                val
+                            })
+                        })
+                        .unwrap_or(expr.clone());
+                    let vec = iter::repeat(v).take(n).collect::<Vec<_>>();
+                    Ok(vec)
+                },
+            }
+        },
+        Value::DatumList(ref l) => {
+            let mut vv = Vec::new();
+            for var in l.iter() {
+                let val = transform_repeated(var, replace, n, lenv, renv, renamed)?;
+                let it = val.into_iter();
+                vv.push(it);
+            }
+            let mut vec: Vec<Value> = Vec::new();
+            for _ in 1 ..= n {
+                let mut l = List::Nil;
+                for i in vv.iter_mut() {
+                    l = l.unshift_r(i.next().unwrap());
                 }
-            },
-            (Some(x), None) => {
-                match x {
-                    PatternElement::VariadicSymbol(s) => {
-                        h.insert(s, Value::DatumList(List::Nil));
-                    },
-                    _ => continue, // impossible
-                }
-            },
-            (None, Some(_)) => continue, // impossible
-            (None, None) => break,
-        }
-    };
+                vec.push(Value::DatumList(l));
+            }
+            Ok(vec)
+        },
+        Value::VarValue(_) | Value::VarList(_) => runtime_error!("failed to expand macro: nested ellipsis(...) not supported in expansion {:?}", expr),
+        _ => runtime_error!("failed to expand macro: unknown expansion {:?}", expr),
+    }
 }
 
 // TODO: for now, #: is not allowed as start of identifier, so ..
@@ -1309,8 +1388,9 @@ fn gensym(s: &String) -> String {
     format!("#:{}", s)
 }
 
-fn transform_template(template: List<Value>, tab: &HashMap<String, Value>, renamed: &mut HashMap<String, String>,
-                      lenv: &Rc<RefCell<Env>>, renv: &Rc<RefCell<Env>>) -> Result<List<Value>, RuntimeError> {
+fn transform_template(template: List<Value>, matcher: &Matcher,
+                      lenv: &Rc<RefCell<Env>>, renv: &Rc<RefCell<Env>>,
+                      renamed: &mut HashMap<String, String>) -> Result<List<Value>, RuntimeError> {
     let mut ret: List<Value> = List::Nil;
     for var in template {
         match var {
@@ -1320,9 +1400,14 @@ fn transform_template(template: List<Value>, tab: &HashMap<String, Value>, renam
             // 3. bind in renv, rename it(gensym)
             // 4. free, keep it as it is
             Value::Symbol(s) => {
-                if tab.contains_key(&s) {
-                    let v = tab.get(&s).unwrap().clone();
-                    ret = ret.unshift_r(v);
+                if matcher.contains_key(&s) {
+                    let v = matcher.get(&s).unwrap();
+                    match v {
+                        RepValue::Val(ref val) => {
+                            ret = ret.unshift_r(val.clone());
+                        },
+                        _ => (),
+                    }
                 } else if lenv.borrow().is_defined(&s) {
                     let v = lenv.borrow().get(&s).unwrap();
                     ret = ret.unshift_r(v);
@@ -1340,22 +1425,69 @@ fn transform_template(template: List<Value>, tab: &HashMap<String, Value>, renam
                     ret = ret.unshift_r(Value::Symbol(s));
                 }
             },
-            Value::VariadicSymbol(s) => {
-                if !tab.contains_key(&s) {
-                    runtime_error!("failed to expand macro: unknown pattern {:?}", s);
+            // a ...
+            Value::VarValue(s) => {
+                if !s.is_symbol() {
+                    runtime_error!("failed to expand macro: cannot expand variadic literals {:?}", s);
                 }
-                let v = tab.get(&s).unwrap().clone();
+                let sym = s.as_symbol()?;
+                if !matcher.contains_key(&sym) {
+                    runtime_error!("failed to expand macro: unknown pattern {:?}", sym);
+                }
+                let v = matcher.get(&sym).unwrap();
                 match v {
-                    Value::DatumList(l) => {
-                        for i in l {
-                            ret = ret.unshift_r(i);
-                        }
+                    RepValue::Repeated(ref l) => {
+                        ret = l.iter().fold(ret, |acc, i| acc.unshift_r(i.clone()));
                     },
-                    _ => runtime_error!("faild to expand macro: varidiac arg must be datum list {:?}", v), // impossible
+                    _ => runtime_error!("failed to expand macro: variadic value must be repeated {:?}", sym), // impossible
+                }
+            },
+            // (a b) ...
+            Value::VarList(l) => {
+                let ks = matcher.keys().cloned().collect::<Vec<_>>();
+                let pattern_vars = Macro::pattern_variables(&l, &Vec::new(), &ks);
+                let sz = pattern_vars.iter()
+                    .map(|s| {
+                        match matcher.get(s) {
+                            Some(RepValue::Repeated(ref v)) => v.len(),
+                            _ => 0,
+                        }
+                    })
+                    .collect::<HashSet<usize>>();
+                if sz.is_empty() {
+                    runtime_error!("failed to expand macro: non repeated values for variadic pattern {:?}", l);
+                } else if sz.len() > 1 {
+                    runtime_error!("failed to expand macro: inconsistent repeat # of pattern variables {:?}", l);
+                }
+                let n = sz.into_iter().next().unwrap();
+                // substitute
+                let mut replace: HashMap<String, Vec<Value>> = HashMap::new();
+                for k in pattern_vars.iter() {
+                    match matcher.get(k) {
+                        Some(RepValue::Repeated(ref var)) => {
+                            replace.insert(k.clone(), var.clone());
+                        },
+                        _ => (),
+                    }
+                }
+                let mut vv = Vec::new();
+                // each expr repeat n times
+                for i in l.iter() {
+                    let x = transform_repeated(i, &replace, n, lenv, renv, renamed)?;
+                    vv.push(x.into_iter());
+                }
+                let mut vec: Vec<Value> = Vec::new();
+                // zip into list
+                for _ in 1 ..= n {
+                    let mut l = List::Nil;
+                    for i in vv.iter_mut() {
+                        l = l.unshift_r(i.next().unwrap());
+                    }
+                    ret = ret.unshift_r(Value::DatumList(l));
                 }
             },
             Value::DatumList(l) => {
-                let v = transform_template(l, tab, renamed, lenv, renv)?;
+                let v = transform_template(l, matcher, lenv, renv, renamed)?;
                 ret = ret.unshift_r(Value::DatumList(v));
             },
             _ => {
@@ -1365,22 +1497,6 @@ fn transform_template(template: List<Value>, tab: &HashMap<String, Value>, renam
     }
 //    println!("transformed: {:?}", ret);
     Ok(ret)
-}
-
-fn expand_macro(rule: SyntaxRule, args: List<Value>,
-                lenv: &Rc<RefCell<Env>>, renv: &Rc<RefCell<Env>>) -> Result<List<Value>, RuntimeError> {
-    let SyntaxRule(pattern, template) = rule;
-    // 1. bind(recursive)
-    let mut h: HashMap<String, Value> = HashMap::new();
-    bind_macro_args(pattern, args, &mut h);
-//    println!("bind macro args:");
-//    for (k, v) in h.iter() {
-//        println!("{}: {:?}", k, v);
-//    }
-    
-    // 2. expand(return new ast tree)
-    let mut renamed: HashMap<String, String> = HashMap::new();
-    transform_template(template, &mut h, &mut renamed, lenv, renv)
 }
 
 fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampoline, RuntimeError> {
