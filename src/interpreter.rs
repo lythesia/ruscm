@@ -95,6 +95,8 @@ pub enum SpecialForm {
     DefineSyntax,
     #[strum(serialize = "syntax-rules")]
     SyntaxRules,
+    #[strum(serialize = "macro-expand")]
+    MacroExpand,
     #[strum(serialize = "call/cc")]
     CallCC,
     // TODO: And, Or
@@ -901,13 +903,12 @@ pub enum Continuation {
         Rc<RefCell<Env>>, // lenv
         Box<Continuation>,
     ),
-//    ContinueMacroExpand(
-//        List<Value>, // rest expr
-//        List<Value>, // expanded expr
-//        Rc<RefCell<Env>>, // defining lexical scope(lenv)
-//        Rc<RefCell<Env>>, // invoking lexical scope(renv)
-//        Box<Continuation>,
-//    ),
+    ExecuteMacroExpand(
+        List<Value>,
+        Rc<RefCell<Env>>,
+        Box<Continuation>,
+    ),
+    ExecuteCallCC(Box<Continuation>),
 }
 
 // (p1 p2 . p3)
@@ -1206,17 +1207,26 @@ impl Continuation {
                                 };
                                 Ok(Trampoline::Value(Value::Macro(makro), *next))
                             },
+                            // (macro-expand macro ...)
+                            SpecialForm::MacroExpand => {
+                                let (m, input) = shift_or_error!(operands, "bad macro-expand form: at least 1 argument expect");
+                                Ok(Trampoline::Bounce(m, env.clone(), Continuation::ExecuteMacroExpand(input, env, next)))
+                            },
+                            // (call/cc proc)
+                            // where proc == (lambda (k) ...)
+                            SpecialForm::CallCC => {
+                                if operands.len() != 1 {
+                                    runtime_error!("bad call/cc form: 1 arguments expected, {} got", operands.len());
+                                }
+                                let f = operands.unpack1()?;
+                                Ok(Trampoline::Bounce(f, env.clone(), Continuation::ExecuteCallCC(next)))
+                            },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next))
                         }
                     },
                     // macro
                     Value::Macro(makro) => {
-                        // 1. match
-                        let (SyntaxRule(_, template), matcher) = makro.rule_matches(&operands, &env)?;
-                        // 2. expand
-                        let mut renamed: HashMap<String, String> = HashMap::new();
-                        let expr = transform_template(template, &matcher, &makro.def_env, &env, &mut renamed)?;
-                        // 3. eval
+                        let expr = macro_expand(&makro, &operands, &env)?;
                         eval_expressions(expr, env, next)
                     },
                     // procedure
@@ -1315,6 +1325,20 @@ impl Continuation {
                     },
                     _ => runtime_error!("value not macro: {:?}", val),
                 }
+            },
+            Continuation::ExecuteMacroExpand(exprs, env, next) => {
+                match val {
+                    Value::Macro(makro) => {
+                        let expr = macro_expand(&makro, &exprs, &env)?;
+                        Ok(Trampoline::Value(Value::DatumList(expr), *next))
+                    },
+                    _ => runtime_error!("value not macro: {:?}", val),
+                }
+            },
+            Continuation::ExecuteCallCC(next) => {
+                let k = Value::Continuation(next.clone());
+                // val is lambda
+                apply(val, list!(k), next)
             },
             Continuation::Return => Ok(Trampoline::Off(val))
         }
@@ -1499,6 +1523,14 @@ fn transform_template(template: List<Value>, matcher: &Matcher,
     Ok(ret)
 }
 
+fn macro_expand(makro: &Macro, operands: &List<Value>, env: &Rc<RefCell<Env>>) -> Result<List<Value>, RuntimeError>{
+    // 1. match
+    let (SyntaxRule(_, template), matcher) = makro.rule_matches(operands, env)?;
+    // 2. expand
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    transform_template(template, &matcher, &makro.def_env, &env, &mut renamed)
+}
+
 fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampoline, RuntimeError> {
     let ff = format!("{:?}", f);
     match f {
@@ -1536,8 +1568,13 @@ fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampol
             let ret = call_primitive(n.as_str(), args)?;
             Ok(Trampoline::Value(ret, *next))
         },
-        // TODO: what is arg for continuation
-//        Value::Continuation(k) => Ok(Trampoline::Value(Value::List(??), *k)), // we already in Continuation::run, so we should go back to trampoline to preserve stackless
+        Value::Continuation(k) => {
+            let arg = match args.shift() {
+                Some((car, _)) => car,
+                _ => Value::Unspecified,
+            };
+            Ok(Trampoline::Value(arg, *k))
+        },
         _ => runtime_error!("how to apply: {:?}", f),
     }
 }
@@ -2234,5 +2271,20 @@ mod tests {
   (is-lit-foo? foo)"#;
         let ret = exec_ok(prog);
         assert!(!ret.as_bool().unwrap());
+    }
+    
+    #[test]
+    fn test_callcc_1() {
+        let prog = r#"
+       (define x 0)
+       (define (+x n) (set! x (+ x n)))
+       (define (foo k) (+x 2) (k) (+x 4))
+       ((lambda ()
+          (+x 1)
+          (call/cc foo)
+          (+x 8)))
+       x ; => 11"#;
+        let ret = exec_ok(prog);
+        assert_eq!(ret.as_integer().unwrap(), 11);
     }
 }
