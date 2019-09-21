@@ -5,6 +5,8 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::iter;
 use std::rc::Rc;
 use std::mem;
+use std::fs;
+use std::io::Read;
 use std::str::FromStr; // strum
 
 use crate::internals::{List, RepValue};
@@ -99,6 +101,7 @@ pub enum SpecialForm {
     MacroExpand,
     #[strum(serialize = "call/cc")]
     CallCC,
+    Load,
     // TODO: And, Or
 }
 
@@ -1220,6 +1223,35 @@ impl Continuation {
                                 }
                                 let f = operands.unpack1()?;
                                 Ok(Trampoline::Bounce(f, env.clone(), Continuation::ExecuteCallCC(next)))
+                            },
+                            // (load "xx" ...)
+                            SpecialForm::Load => {
+                                if operands.len() == 0 {
+                                    runtime_error!("wrong number of operands to `load`: at least 1 argument");
+                                }
+                                if !all_of!(operands, is_string) {
+                                    runtime_error!("wrong type of operands to `load`(must be string): {:?}", operands);
+                                }
+                                for i in operands.iter() {
+                                    let path = i.clone().as_string()?;
+                                    match fs::OpenOptions::new()
+                                        .read(true)
+                                        .open(&path) {
+                                        Ok(mut file) => {
+                                            let mut src = String::new();
+                                            file.read_to_string(&mut src);
+                                            let prog = src.as_str();
+                                            let tokens = Lexer::tokenize(prog).unwrap();
+                                            let tree = Parser::parse(&tokens).unwrap();
+                                            if process(&tree, env.clone()).is_err() {
+                                                runtime_error!("error loading {}", path);
+                                                break
+                                            }
+                                        },
+                                        Err(e) => runtime_error!("open `{}' failed: {}", path, e),
+                                    }
+                                }
+                                Ok(Trampoline::Value(Value::Unspecified, *next))
                             },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next))
                         }
