@@ -316,10 +316,10 @@ impl Macro {
                 let ret = self
                     .match_list(&rule.0, input, run_env, 0, &mut matcher)
                     .map(|m| {
-                        print!("{:?}", m);
+                        //print!("{:?}", m);
                         (rule.clone(), matcher, m)
                     });
-                println!(" {:?} => {:?}", rule.0, input);
+                //println!(" {:?} => {:?}", rule.0, input);
                 ret
             })
             .filter_map(Result::ok)
@@ -418,8 +418,8 @@ impl Display for Value {
             Value::Procedure(ref v, _, _) => write!(f, "#<procedure: [{}]>", v.join(", ")),
             Value::Macro(ref v) => write!(f, "#<macro: {}>", v.name),
             Value::Continuation(_) => write!(f, "#<continuation>"),
-            Value::VarValue(ref v) => write!(f, "{} ...", v),
-            Value::VarList(ref v) => write!(f, "{} ...", v),
+            Value::VarValue(ref v) => write!(f, "v#{} ...", v),
+            Value::VarList(ref v) => write!(f, "vl#{} ...", v),
         }
     }
 }
@@ -743,17 +743,20 @@ pub fn from_ast_node(i: &AstNode) -> Value {
     }
 }
 pub fn from_ast_nodes(l: &List<AstNode>) -> List<Value> {
-    let mut nl = l.iter().map(|x| from_ast_node(x)).collect::<Vec<Value>>();
-    let n = nl.len();
-    if n >= 2 {
-        let (x, y) = (&nl[n - 2], &nl[n - 1]);
-        if y.is_symbol_with("...") {
+    let mut prev: Option<Value> = None;
+    let mut nl: Vec<Value> = Vec::new();
+    for i in l.iter().map(|x| from_ast_node(x)) {
+        let p = prev.replace(i.clone());
+        if i.is_symbol_with("...") && p.is_some() {
+            let x = p.unwrap();
             let var = match x {
                 Value::DatumList(l) => Value::VarList(l.clone()),
                 v => Value::VarValue(Box::new(v.clone())),
             };
-            nl.truncate(n - 2);
+            nl.pop();
             nl.push(var);
+        } else {
+            nl.push(i.clone());
         }
     }
     nl.into_iter().collect::<List<Value>>()
@@ -794,6 +797,7 @@ impl Env {
             ">",
             "<=",
             ">=",
+            "zero?",
             "display",
             "newline",
             "displayln",
@@ -1065,6 +1069,12 @@ impl Continuation {
                             }
                             // (set! var val)
                             SpecialForm::Set => {
+                                if operands.len() != 2 {
+                                    runtime_error!(
+                                        "bad set! form: 2 arguments expected, {} got",
+                                        operands.len()
+                                    );
+                                }
                                 let (var_name, var_val) = operands.unpack2()?;
                                 let name = var_name.as_symbol()?;
                                 Ok(Trampoline::Bounce(
@@ -1561,14 +1571,6 @@ fn transform_repeated(
 ) -> Result<Vec<Value>, RuntimeError> {
     // expr can only be: symbol | literal | list
     match expr {
-        Value::Boolean(_)
-        | Value::Integer(_)
-        | Value::Float(_)
-        | Value::String(_)
-        | Value::Character(_) => {
-            let vec = iter::repeat(expr.clone()).take(n).collect::<Vec<Value>>();
-            Ok(vec)
-        }
         Value::Symbol(ref s) => {
             match replace.get(s) {
                 Some(v) => {
@@ -1623,7 +1625,10 @@ fn transform_repeated(
             "failed to expand macro: nested ellipsis(...) not supported in expansion {:?}",
             expr
         ),
-        _ => runtime_error!("failed to expand macro: unknown expansion {:?}", expr),
+        _ => {
+            let vec = iter::repeat(expr.clone()).take(n).collect::<Vec<Value>>();
+            Ok(vec)
+        }
     }
 }
 
@@ -1640,6 +1645,7 @@ fn transform_template(
     renamed: &mut HashMap<String, String>,
 ) -> Result<List<Value>, RuntimeError> {
     let mut ret: List<Value> = List::Nil;
+    //println!("template {:?} >>", template);
     for var in template {
         match var {
             // symbols:
@@ -1738,11 +1744,13 @@ fn transform_template(
                 let mut vec: Vec<Value> = Vec::new();
                 // zip into list
                 for _ in 1..=n {
-                    let mut l = List::Nil;
+                    let mut subl = List::Nil;
                     for i in vv.iter_mut() {
-                        l = l.unshift_r(i.next().unwrap());
+                        subl = subl.unshift_r(i.next().unwrap());
                     }
-                    ret = ret.unshift_r(Value::DatumList(l));
+                    let vl = Value::DatumList(subl);
+                    //println!("Varlist {:?}: add {:?}", l, vl);
+                    ret = ret.unshift_r(vl);
                 }
             }
             Value::DatumList(l) => {
@@ -1754,7 +1762,7 @@ fn transform_template(
             }
         }
     }
-    //    println!("transformed: {:?}", ret);
+    //println!("transformed: {:?}", ret);
     Ok(ret)
 }
 
@@ -1774,6 +1782,7 @@ fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampol
     let ff = format!("{:?}", f);
     match f {
         Value::Procedure(params, body, env) => {
+            //println!("apply proc: {:?} with {:?}", params, args);
             let dot = ".".to_string();
             let new_env = Env::derive(env);
             // params verified
@@ -1851,6 +1860,9 @@ fn call_primitive(f: &str, args: List<Value>) -> Result<Value, RuntimeError> {
         "*" => call_primitive_arithmetic(args, f, primitive_mul_i, primitive_mul_f),
         "/" => call_primitive_arithmetic(args, f, primitive_div_i, primitive_div_f),
         "=" => call_primitive_arithmetic(args, f, primitive_eq_i, primitive_eq_f),
+        "zero?" => {
+            call_primitive_predicate(args, f, |v| v.is_integer_with(0) || v.is_float_with(0.0))
+        }
         ">" => call_primitive_arithmetic(args, f, primitive_gt_i, primitive_gt_f),
         "<=" => call_primitive_arithmetic(args, f, primitive_le_i, primitive_le_f),
         "<" => call_primitive_arithmetic(args, f, primitive_lt_i, primitive_lt_f),
