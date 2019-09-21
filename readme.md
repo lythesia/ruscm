@@ -4,24 +4,26 @@ dont panic
 
 
 
-### features
+### progress
 
 basis datum:
-[x] integer(i64) & float(f64)
-[x] char
-[x] string
-[x] boolean
-[x] quasiquote & unquote
-[ ] vector
-[ ] rational
-[ ] complex
-[ ] bignum
+- [x] integer(i64) & float(f64)
+- [x] char
+- [x] string
+- [x] boolean
+- [x] quasiquote & unquote
+- [ ] vector
+- [ ] rational
+- [ ] complex
+- [ ] bignum
 
 macro:
-[x] hygiene
-[x] pattern matching 
-[ ] nested ellipsis
+- [x] hygiene
+- [x] pattern matching (multiple matching check?)
+- [ ] nested ellipsis
 
-[x] call/cc
-[x] basic primitives
-[ ] lib support: `load`
+features:
+- [x] call/cc
+- [x] basic primitives
+- [x] lib support: `load`
+- [ ] pre-repl stdlib

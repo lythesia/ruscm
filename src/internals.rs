@@ -86,11 +86,9 @@ impl<T> List<T> {
     }
     pub fn shift2(self) -> Option<(T, T, Self)> {
         match self {
-            List::Cons(h1, t1) => {
-                match *t1 {
-                    List::Cons(h2, t2) => Some((*h1, *h2, *t2)),
-                    _ => None,
-                }
+            List::Cons(h1, t1) => match *t1 {
+                List::Cons(h2, t2) => Some((*h1, *h2, *t2)),
+                _ => None,
             },
             _ => None,
         }
@@ -103,14 +101,16 @@ impl<T> List<T> {
     pub fn unshift_r(self, rear: T) -> Self {
         match self {
             List::Cons(head, tail) => List::Cons(Box::new(*head), Box::new(tail.unshift_r(rear))),
-            _ => self.unshift(rear)
+            _ => self.unshift(rear),
         }
     }
 
     pub fn unpack1(self) -> Result<T, RuntimeError> {
         let (car, cdr) = shift_or_error!(self, "expected list(# = 1), but nil got");
         if !cdr.is_nil() {
-            return Err(RuntimeError { msg: format!("expected list (# = 1), but # > 1 got")})
+            return Err(RuntimeError {
+                msg: format!("expected list (# = 1), but # > 1 got"),
+            });
         }
         Ok(car)
     }
@@ -119,7 +119,9 @@ impl<T> List<T> {
         let (car, cdr) = shift_or_error!(self, "expected list(# = 2), but nil got");
         let (cadr, cddr) = shift_or_error!(cdr, "expected list(# = 2), but # = 1 got");
         if !cddr.is_nil() {
-            return Err(RuntimeError { msg: format!("expected list (# = 2), but # > 2 got")})
+            return Err(RuntimeError {
+                msg: format!("expected list (# = 2), but # > 2 got"),
+            });
         }
         Ok((car, cadr))
     }
@@ -129,7 +131,9 @@ impl<T> List<T> {
         let (cadr, cddr) = shift_or_error!(cdr, "expected list(# = 3), but # = 1 got");
         let (caddr, cdddr) = shift_or_error!(cddr, "expected list(# = 3), but # = 2 got");
         if !cdddr.is_nil() {
-            return Err(RuntimeError { msg: format!("expected list (# = 2), but # > 3 got")})
+            return Err(RuntimeError {
+                msg: format!("expected list (# = 2), but # > 3 got"),
+            });
         }
         Ok((car, cadr, caddr))
     }
@@ -181,7 +185,7 @@ impl<T> Iterator for IntoIter<T> {
             Some((car, cdr)) => {
                 mem::replace(&mut self.0, cdr);
                 Some(car)
-            },
+            }
             _ => None,
         }
     }
@@ -264,7 +268,7 @@ mod tests {
     fn test_list_iter_collect() {
         let ll = vec![1, 2];
 
-//        let mut it = ll.iter().map(|i| Box::new(*i));
+        //        let mut it = ll.iter().map(|i| Box::new(*i));
         let ll2 = ll.into_iter().collect::<List<i32>>();
         println!("ll2: {}", ll2);
         let mut it2 = ll2.iter();
