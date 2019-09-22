@@ -95,3 +95,24 @@
 ;   (even? 5))
 ; named-let
 ; (let loop ((n 10) (acc '())) (if (= 0 n) acc (loop (- n 1) (cons n acc))))
+
+(define make-promise
+  (lambda (proc)
+    (let ((result-ready? #f)
+          (result #f))
+      (lambda ()
+        (if result-ready?
+            result
+            (let ((x (proc)))
+              (if result-ready?
+                  result
+                  (begin (set! result-ready? #t)
+                         (set! result x)
+                         result))))))))
+(define-syntax delay
+  (syntax-rules ()
+    ((delay expression)
+     (make-promise (lambda () expression)))))
+(define force
+  (lambda (object)
+    (object)))

@@ -100,7 +100,7 @@ pub enum SpecialForm {
     #[strum(serialize = "call/cc")]
     CallCC,
     Load,
-    // TODO: And, Or
+    // And, Or: as macro
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -869,14 +869,6 @@ impl Env {
         rr!(env)
     }
 
-    // TODO: any case we need define via invoke .root env? or we make it member proc
-    pub fn root_of(e: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
-        match e.borrow().outer {
-            Some(ref p) => Self::root_of(p),
-            _ => e.clone(),
-        }
-    }
-
     pub fn values(&self) -> &HashMap<String, Value> {
         &self.values
     }
@@ -1485,7 +1477,6 @@ impl Continuation {
             )),
             Continuation::ExecuteApply(f, next) => apply(f, val.to_list()?, next),
             Continuation::ExecuteEval(env, next) => {
-                // TODO: which env? where the eval appears?
                 Ok(Trampoline::Bounce(val.to_ast_list(), env, *next))
             }
             Continuation::ContinueQuasiExpand(skip, rest, acc, env, next) => {
@@ -2189,7 +2180,6 @@ fn primitive_eqv(args: List<Value>) -> Result<Value, RuntimeError> {
     }
 }
 
-// TODO: or make it procedures?
 pub enum Trampoline {
     // go forward
     Bounce(Value, Rc<RefCell<Env>>, Continuation),

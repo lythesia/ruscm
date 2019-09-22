@@ -26,4 +26,13 @@ features:
 - [x] call/cc
 - [x] basic primitives
 - [x] lib support: `load`
+- [ ] first-class environment
 - [ ] pre-repl stdlib
+- [ ] remove set-car/cdr! (simplify cons list)
+
+stdlib:
+- [ ] equality
+- [ ] list operations
+
+dist:
+- [ ] cli support

@@ -1,13 +1,13 @@
 use std::error::Error as StdError;
-use std::fmt::{Debug,Display,Formatter,Result as FmtResult};
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::slice;
 use std::str::FromStr;
 
 //use strum::EnumMessage;
 //use strum_macros::Display;
 
-use crate::internals::{List};
-use crate::lexer::{Token, Position, Lexer};
+use crate::internals::List;
+use crate::lexer::{Lexer, Position, Token};
 
 #[derive(Debug)]
 pub enum AstNode {
@@ -54,8 +54,7 @@ impl Display for ParseError {
     }
 }
 
-impl StdError for ParseError {
-}
+impl StdError for ParseError {}
 
 macro_rules! parse_error {
     ($pos:ident, $($arg:tt)*) => (
@@ -84,23 +83,17 @@ impl<'a> Parser<'a> {
                                 Ok(Some(AstNode::List(List::Nil)))
                             }
                         }
-                    },
+                    }
                     Token::RPAREN | Token::RBRACK => {
                         if depth > 0 {
                             Ok(None)
                         } else {
                             parse_error!(pos, "unexpected )");
                         }
-                    },
-                    Token::DOT => {
-                        Ok(Some(AstNode::Symbol(".".to_string())))
-                    },
-                    Token::ELLIPSIS => {
-                        Ok(Some(AstNode::Symbol("...".to_string())))
-                    },
-                    Token::IDENTIFIER(ref v) => {
-                        Ok(Some(AstNode::Symbol(v.clone())))
-                    },
+                    }
+                    Token::DOT => Ok(Some(AstNode::Symbol(".".to_string()))),
+                    Token::ELLIPSIS => Ok(Some(AstNode::Symbol("...".to_string()))),
+                    Token::IDENTIFIER(ref v) => Ok(Some(AstNode::Symbol(v.clone()))),
                     Token::VEC_LPAREN => {
                         let v = AstNode::Symbol("vec".to_string());
                         if let Some(inner) = self.parse_tree(depth + 1)? {
@@ -110,68 +103,46 @@ impl<'a> Parser<'a> {
                             let ret: List<AstNode> = list!(v);
                             Ok(Some(AstNode::List(ret)))
                         }
-                    },
-                    Token::CHARACTER(ref v) => {
-                        Ok(Some(AstNode::Character(v.clone())))
-                    },
-                    Token::INTEGER(ref v) => {
-                        Ok(Some(AstNode::Integer(v.clone())))
-                    },
-                    Token::FLOAT(ref v) => {
-                        Ok(Some(AstNode::Float(v.clone())))
-                    },
-                    Token::BOOLEAN(ref v) => {
-                        Ok(Some(AstNode::Boolean(v.clone())))
-                    },
-                    Token::STRING(ref v) => {
-                        Ok(Some(AstNode::String(v.clone())))
-                    },
-                    Token::QUOTE => {
-                        match self.parse_tree_node(depth)? {
-                            Some(inner) => {
-                                let quoted: List<AstNode> = list!(AstNode::Symbol("quote".to_string()), inner);
-                                Ok(Some(AstNode::List(quoted)))
-                            },
-                            _ => {
-                                parse_error!(pos, "missing quote value")
-                            },
+                    }
+                    Token::CHARACTER(ref v) => Ok(Some(AstNode::Character(v.clone()))),
+                    Token::INTEGER(ref v) => Ok(Some(AstNode::Integer(v.clone()))),
+                    Token::FLOAT(ref v) => Ok(Some(AstNode::Float(v.clone()))),
+                    Token::BOOLEAN(ref v) => Ok(Some(AstNode::Boolean(v.clone()))),
+                    Token::STRING(ref v) => Ok(Some(AstNode::String(v.clone()))),
+                    Token::QUOTE => match self.parse_tree_node(depth)? {
+                        Some(inner) => {
+                            let quoted: List<AstNode> =
+                                list!(AstNode::Symbol("quote".to_string()), inner);
+                            Ok(Some(AstNode::List(quoted)))
                         }
+                        _ => parse_error!(pos, "missing quote value"),
                     },
-                    Token::UNQUOTE => {
-                        match self.parse_tree_node(depth)? {
-                            Some(inner) => {
-                                let unquoted: List<AstNode> = list!(AstNode::Symbol("unquote".to_string()), inner);
-                                Ok(Some(AstNode::List(unquoted)))
-                            },
-                            _ => {
-                                parse_error!(pos, "missing unquote value")
-                            },
+                    Token::UNQUOTE => match self.parse_tree_node(depth)? {
+                        Some(inner) => {
+                            let unquoted: List<AstNode> =
+                                list!(AstNode::Symbol("unquote".to_string()), inner);
+                            Ok(Some(AstNode::List(unquoted)))
                         }
+                        _ => parse_error!(pos, "missing unquote value"),
                     },
-                    Token::QUASIQUOTE => {
-                        match self.parse_tree_node(depth)? {
-                            Some(inner) => {
-                                let quoted: List<AstNode> = list!(AstNode::Symbol("quasiquote".to_string()), inner);
-                                Ok(Some(AstNode::List(quoted)))
-                            },
-                            _ => {
-                                parse_error!(pos, "missing quasiquote value")
-                            },
+                    Token::QUASIQUOTE => match self.parse_tree_node(depth)? {
+                        Some(inner) => {
+                            let quoted: List<AstNode> =
+                                list!(AstNode::Symbol("quasiquote".to_string()), inner);
+                            Ok(Some(AstNode::List(quoted)))
                         }
+                        _ => parse_error!(pos, "missing quasiquote value"),
                     },
-                    Token::UNQUOTE_SPLICING => {
-                        match self.parse_tree_node(depth)? {
-                            Some(inner) => {
-                                let unquoted: List<AstNode> = list!(AstNode::Symbol("unquote-splicing".to_string()), inner);
-                                Ok(Some(AstNode::List(unquoted)))
-                            },
-                            _ => {
-                                parse_error!(pos, "missing unquote-splicing value")
-                            },
+                    Token::UNQUOTE_SPLICING => match self.parse_tree_node(depth)? {
+                        Some(inner) => {
+                            let unquoted: List<AstNode> =
+                                list!(AstNode::Symbol("unquote-splicing".to_string()), inner);
+                            Ok(Some(AstNode::List(unquoted)))
                         }
+                        _ => parse_error!(pos, "missing unquote-splicing value"),
                     },
                 }
-            },
+            }
             // incomplete s-exp
             _ => {
                 if depth > 0 {
@@ -179,10 +150,10 @@ impl<'a> Parser<'a> {
                 } else {
                     Ok(None)
                 }
-            },
+            }
         }
     }
-    
+
     // always return list !
     fn parse_tree(&mut self, depth: usize) -> Result<Option<AstNode>, ParseError> {
         let mut tree: List<AstNode> = List::Nil;
@@ -194,16 +165,18 @@ impl<'a> Parser<'a> {
             for i in v.into_iter().rev() {
                 tree = List::Cons(Box::new(i), Box::new(tree));
             }
-//            println!("@depth={}: {:?}", depth, tree);
+            //            println!("@depth={}: {:?}", depth, tree);
             Ok(Some(AstNode::List(tree)))
         } else {
             Ok(None)
         }
     }
-    
+
     // Vec <=> s-exp*
     pub fn parse(tokens: &Vec<(Token, Position)>) -> Result<List<AstNode>, ParseError> {
-        let mut parser = Parser { tokens: tokens.iter() };
+        let mut parser = Parser {
+            tokens: tokens.iter(),
+        };
         let mut v: Vec<AstNode> = Vec::new();
         while let Some(node) = parser.parse_tree_node(0)? {
             v.push(node);
@@ -215,32 +188,32 @@ impl<'a> Parser<'a> {
 
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_list_macro() {
         let l: List<i32> = list!();
         assert!(l.is_nil());
-        
+
         let l1: List<i32> = list!(1);
         let mut i1 = l1.iter();
         assert_eq!(i1.next(), Some(&1));
 
-        let l2: List<i32> = list!(2,3);
+        let l2: List<i32> = list!(2, 3);
         let mut i2 = l2.iter();
         assert_eq!(i2.next(), Some(&2));
         assert_eq!(i2.next(), Some(&3));
     }
-    
+
     #[test]
     fn test_parser() {
-//        let prog = r#"(define amb-fail '*)"#;
-//        let prog = r#"(define amb-fail '*)
-//
-//(define initialize-amb-fail
-//  (lambda ()
-//    (set! amb-fail
-//      (lambda ()
-//        (error "amb tree exhausted")))))"#;
+        //        let prog = r#"(define amb-fail '*)"#;
+        //        let prog = r#"(define amb-fail '*)
+        //
+        //(define initialize-amb-fail
+        //  (lambda ()
+        //    (set! amb-fail
+        //      (lambda ()
+        //        (error "amb tree exhausted")))))"#;
         let prog = r#"(define amb-fail '*)
 
 (define initialize-amb-fail
@@ -280,7 +253,7 @@ mod tests {
             println!("{}", i);
         }
     }
-    
+
     #[test]
     fn test_ast_tree_op() {
         let s = "(lambda () a)";
@@ -289,24 +262,23 @@ mod tests {
         assert!(tree.is_ok());
         let tree = tree.unwrap();
         let t = tree.unpack1().unwrap();
-        // TODO: extract AstNode::List is struggling, fix it!
         match t {
             AstNode::List(l) => {
-//                match *l {
-//                    List::Cons(ref x, ref y) => {
-//                        println!("x: {:?}", x);
-//                        let (a, b) = List::shift(y.clone()).unwrap();
-//                        println!("a: {:?}", a);
-//                        println!("b: {:?}", b);
-//                        // b is List, so body as cdr of tree is always list
-//                    },
-//                    _ => {},
-//                }
-                let(_, y) = l.shift().unwrap();
+                //                match *l {
+                //                    List::Cons(ref x, ref y) => {
+                //                        println!("x: {:?}", x);
+                //                        let (a, b) = List::shift(y.clone()).unwrap();
+                //                        println!("a: {:?}", a);
+                //                        println!("b: {:?}", b);
+                //                        // b is List, so body as cdr of tree is always list
+                //                    },
+                //                    _ => {},
+                //                }
+                let (_, y) = l.shift().unwrap();
                 let (_, b) = y.shift().unwrap();
                 println!("b: {:?}", b);
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }

@@ -50,7 +50,7 @@ impl Completer for ReplHelper {
 impl Hinter for ReplHelper {
     fn hint(&self, line: &str, pos: usize, ctx: &Context<'_>) -> Option<String> {
         //        self.hinter.hint(line, pos, ctx)
-        None // TODO: disable history for now, since it's noisy
+        None // disable history for now, since it's noisy
     }
 }
 
