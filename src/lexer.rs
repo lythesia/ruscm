@@ -269,14 +269,14 @@ impl<'a> Lexer<'a> {
         let sign = self.parse_sign()?;
         let s = if let Some(c) = sign {
             let mut s =
-                peek_while(&mut self.chars, |c: &char| c.is_digit(radix)).collect::<String>();
+                peek_while(&mut self.chars, |c: &char| !Self::is_delimiter(c)).collect::<String>();
             s.insert(0, c);
             s
         } else {
             // current is digit now
             match self.current {
                 Some(c) if c.is_digit(radix) => {
-                    let mut s = peek_while(&mut self.chars, |c: &char| c.is_digit(radix))
+                    let mut s = peek_while(&mut self.chars, |c: &char| !Self::is_delimiter(c))
                         .collect::<String>();
                     s.insert(0, c);
                     s
@@ -472,16 +472,16 @@ impl<'a> Lexer<'a> {
                                     // NOTE: with try we need to reset stream!
                                     let restore = self.checkpoint();
                                     // try integer
-                                    match self.parse_float() {
+                                    match self.parse_integer(10) {
                                         Ok(v) => {
-                                            self.push_token(Token::FLOAT(v));
+                                            self.push_token(Token::INTEGER(v));
                                             self.advance();
                                             self.parse_delimiter()?;
                                         }
                                         Err(_) => {
                                             self.reset(restore);
-                                            let v = self.parse_integer(10)?;
-                                            self.push_token(Token::INTEGER(v));
+                                            let v = self.parse_float()?;
+                                            self.push_token(Token::FLOAT(v));
                                             self.parse_delimiter()?;
                                         }
                                     }
@@ -500,16 +500,16 @@ impl<'a> Lexer<'a> {
                         '0'..='9' => {
                             // try integer
                             let restore = self.checkpoint();
-                            match self.parse_float() {
+                            match self.parse_integer(10) {
                                 Ok(v) => {
-                                    self.push_token(Token::FLOAT(v));
+                                    self.push_token(Token::INTEGER(v));
                                     self.advance();
                                     self.parse_delimiter()?;
                                 }
                                 Err(_) => {
                                     self.reset(restore);
-                                    let v = self.parse_integer(10)?;
-                                    self.push_token(Token::INTEGER(v));
+                                    let v = self.parse_float()?;
+                                    self.push_token(Token::FLOAT(v));
                                     self.advance();
                                     self.parse_delimiter()?;
                                 }
