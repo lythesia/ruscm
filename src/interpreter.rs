@@ -28,6 +28,8 @@ macro_rules! all_of {
     };
 }
 
+pub const ARGV: &str = "#ARGV#";
+
 // TODO: err to common lib?
 pub struct RuntimeError {
     pub msg: String,
@@ -101,6 +103,8 @@ pub enum SpecialForm {
     CallCC,
     Load,
     // And, Or: as macro
+    #[strum(serialize = "command-line")]
+    CommandLine,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -813,6 +817,8 @@ impl Env {
             outer: None,
             values: map,
         };
+        // constants
+        env.define(String::from("*unspecified*"), Value::Unspecified);
         rr!(env)
     }
 
@@ -871,6 +877,13 @@ impl Env {
 
     pub fn values(&self) -> &HashMap<String, Value> {
         &self.values
+    }
+    
+    pub fn root_of(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
+        match env.borrow().outer {
+            Some(ref p) => Self::root_of(p),
+            _ => env.clone(),
+        }
     }
 }
 
@@ -1418,7 +1431,18 @@ impl Continuation {
                                     }
                                 }
                                 Ok(Trampoline::Value(Value::Unspecified, *next))
-                            }
+                            },
+                            SpecialForm::CommandLine => {
+                                if !operands.is_nil() {
+                                    runtime_error!("wrong number of args to `command-line': 0 expected");
+                                }
+                                let argv = String::from(ARGV);
+                                let root = Env::root_of(&env);
+                                if !root.borrow().is_defined(&argv) {
+                                    root.borrow_mut().define(argv.clone(), Value::Nil);
+                                }
+                                Ok(Trampoline::Bounce(Value::Symbol(argv.clone()), root, *next))
+                            },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next)),
                         }
                     }
@@ -2295,13 +2319,33 @@ pub fn process(ast: &List<AstNode>, env: Rc<RefCell<Env>>) -> Result<Value, Runt
     }
 }
 
-fn exec(prog: &str) -> Result<Value, RuntimeError> {
+pub fn exec(prog: &str) -> Result<Value, RuntimeError> {
     let tokens = Lexer::tokenize(prog).unwrap();
     let tree = Parser::parse(&tokens).unwrap();
-    process(&tree, Env::root())
+    
+    let env = Env::root();
+    let prog = r#"(load "stdlib/prologue.ss")"#;
+    prologue(prog, env.clone());
+    
+    process(&tree, env)
 }
 
-fn exec_ok(prog: &str) -> Value {
+pub fn exec_args(prog: &str, args: Vec<String>) -> Result<Value, RuntimeError> {
+    let tokens = Lexer::tokenize(prog).unwrap();
+    let tree = Parser::parse(&tokens).unwrap();
+    let env = Env::root();
+    let scm_args = args.into_iter()
+        .map(|x| Value::Symbol(x))
+        .collect::<List<Value>>();
+    env.borrow_mut().define(String::from(ARGV), Value::from_list(scm_args));
+    
+    let prog = r#"(load "stdlib/prologue.ss")"#;
+    prologue(prog, env.clone());
+    
+    process(&tree, env)
+}
+
+pub fn exec_ok(prog: &str) -> Value {
     exec(prog).unwrap()
 }
 
