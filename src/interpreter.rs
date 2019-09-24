@@ -769,6 +769,7 @@ pub fn from_ast_nodes(l: &List<AstNode>) -> List<Value> {
 pub struct Env {
     outer: Option<Rc<RefCell<Env>>>,
     values: HashMap<String, Value>,
+    dollars: usize,
 }
 
 impl Env {
@@ -816,6 +817,7 @@ impl Env {
         let mut env = Env {
             outer: None,
             values: map,
+            dollars: 0,
         };
         // constants
         env.define(String::from("*unspecified*"), Value::Unspecified);
@@ -871,6 +873,7 @@ impl Env {
         let env = Env {
             outer: Some(parent.clone()),
             values: HashMap::new(),
+            dollars: 0,
         };
         rr!(env)
     }
@@ -884,6 +887,16 @@ impl Env {
             Some(ref p) => Self::root_of(p),
             _ => env.clone(),
         }
+    }
+    
+    pub fn new_dollar(&mut self, val: Value) {
+        self.dollars += 1;
+        self.define(format!("${}", self.dollars), val.clone());
+        self.values.insert(String::from("$?"), val); // insert it anyway
+    }
+    
+    pub fn dollars(&self) -> usize {
+        self.dollars
     }
 }
 

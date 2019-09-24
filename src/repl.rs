@@ -160,7 +160,8 @@ impl Repl {
                     match process(&tree, self.env.clone()) {
                         Ok(val) => {
                             if !val.is_unspecified() {
-                                println!("{}", val);
+                                println!("${} = {}", self.env.borrow().dollars() + 1, val);
+                                self.env.borrow_mut().new_dollar(val);
                             }
                         }
                         Err(err) => println!("{}", err),
