@@ -895,20 +895,20 @@ impl Env {
     pub fn values(&self) -> &HashMap<String, Value> {
         &self.values
     }
-    
+
     pub fn root_of(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         match env.borrow().outer {
             Some(ref p) => Self::root_of(p),
             _ => env.clone(),
         }
     }
-    
+
     pub fn new_dollar(&mut self, val: Value) {
         self.dollars += 1;
         self.define(format!("${}", self.dollars), val.clone());
         self.values.insert(String::from("$?"), val); // insert it anyway
     }
-    
+
     pub fn dollars(&self) -> usize {
         self.dollars
     }
@@ -1049,7 +1049,7 @@ impl Continuation {
                     // eval next expressions, don't care val
                     eval_expressions(rest, env, next)
                 }
-            },
+            }
             Continuation::ApplyLike(operands, env, next) => {
                 match val {
                     // special form
@@ -1221,10 +1221,10 @@ impl Continuation {
                                     Ok(Trampoline::Bounce(
                                         e,
                                         env.clone(),
-                                        Continuation::ExecuteEvalWithEnv(expr, env, next)
+                                        Continuation::ExecuteEvalWithEnv(expr, env, next),
                                     ))
                                 }
-                            },
+                            }
                             // (quasiquote expr)
                             // NOTE: unquote must be inside quasiquote
                             SpecialForm::Quasiquote => {
@@ -1382,8 +1382,8 @@ impl Continuation {
                                                 runtime_error!("bad syntax-rules form: rule must be list(# = 2) {}", msg);
                                             } else {
                                                 let (pattern, template) = l.shift().unwrap(); // make template as expressions
-                                                let pattern: List<Value> = pattern.from_ast_list()?; // to_list
-                                                // _ placeholder for macro name, omit it
+                                                let pattern: List<Value> =
+                                                    pattern.from_ast_list()?; // to_list
                                                 let (_, pattern) = shift_or_error!(pattern, "bad syntax-rule pattern: must supply at least 1 pattern argument(aka. macro itself)");
                                                 // verify
                                                 verify_macro_syntax(&pattern, 0)?;
@@ -1471,10 +1471,12 @@ impl Continuation {
                                     }
                                 }
                                 Ok(Trampoline::Value(Value::Unspecified, *next))
-                            },
+                            }
                             SpecialForm::CommandLine => {
                                 if !operands.is_nil() {
-                                    runtime_error!("wrong number of args to `command-line': 0 expected");
+                                    runtime_error!(
+                                        "wrong number of args to `command-line': 0 expected"
+                                    );
                                 }
                                 let argv = String::from(ARGV);
                                 let root = Env::root_of(&env);
@@ -1482,13 +1484,15 @@ impl Continuation {
                                     root.borrow_mut().define(argv.clone(), Value::Nil);
                                 }
                                 Ok(Trampoline::Bounce(Value::Symbol(argv.clone()), root, *next))
-                            },
+                            }
                             SpecialForm::CurrentEnvironment => {
                                 if !operands.is_nil() {
-                                    runtime_error!("wrong number of args to `current-environment': 0 expected");
+                                    runtime_error!(
+                                        "wrong number of args to `current-environment': 0 expected"
+                                    );
                                 }
                                 Ok(Trampoline::Value(Value::Environment(env), *next))
-                            },
+                            }
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next)),
                         }
                     }
@@ -1511,18 +1515,18 @@ impl Continuation {
                         }
                     }
                 }
-            },
+            }
             Continuation::EvaluateDefine(var_name, env, next) => {
                 env.borrow_mut().define(var_name, val);
                 Ok(Trampoline::Value(Value::Unspecified, *next))
-            },
+            }
             Continuation::EvaluateSet(var_name, env, next) => {
                 if val.is_macro() {
                     runtime_error!("macro cannot be set: {:?}", val);
                 }
                 env.borrow_mut().set(var_name, val)?;
                 Ok(Trampoline::Value(Value::Unspecified, *next))
-            },
+            }
             Continuation::EvaluateIf(cons, alt, env, next) => match val {
                 Value::Boolean(false) => Ok(Trampoline::Bounce(alt, env, *next)),
                 _ => Ok(Trampoline::Bounce(cons, env, *next)),
@@ -1539,7 +1543,7 @@ impl Continuation {
                     // exhaust args
                     _ => apply(f, acc, next),
                 }
-            },
+            }
             Continuation::EvaluateApplyArgs(args, env, next) => Ok(Trampoline::Bounce(
                 args,
                 env,
@@ -1548,12 +1552,17 @@ impl Continuation {
             Continuation::ExecuteApply(f, next) => apply(f, val.to_list()?, next),
             Continuation::ExecuteEval(env, next) => {
                 Ok(Trampoline::Bounce(val.to_ast_list(), env, *next))
-            },
-            Continuation::ExecuteEvalWithEnv(expr, env, next) => {
-                match val {
-                    Value::Environment(eval_env) => Ok(Trampoline::Bounce(expr, env, Continuation::ExecuteEval(eval_env, next))),
-                    _ => runtime_error!("bad eval form: 2nd argument to `eval` must be environment {:?}", val),
-                }
+            }
+            Continuation::ExecuteEvalWithEnv(expr, env, next) => match val {
+                Value::Environment(eval_env) => Ok(Trampoline::Bounce(
+                    expr,
+                    env,
+                    Continuation::ExecuteEval(eval_env, next),
+                )),
+                _ => runtime_error!(
+                    "bad eval form: 2nd argument to `eval` must be environment {:?}",
+                    val
+                ),
             },
             Continuation::ContinueQuasiExpand(skip, rest, acc, env, next) => {
                 // cons quasi value
@@ -1572,7 +1581,7 @@ impl Continuation {
                         Ok(Trampoline::Value(cl, *next))
                     }
                 }
-            },
+            }
             Continuation::ExecuteUnQuoteSplicing(next) => {
                 if !val.is_list() {
                     runtime_error!("impossible! result of unquote-splicing must be a list");
@@ -1601,7 +1610,7 @@ impl Continuation {
                     }
                     _ => runtime_error!("impossible! unquote-splicing outside of quasiquote"),
                 }
-            },
+            }
             Continuation::EvaluateMacroDefine(name, env, next) => match val {
                 Value::Macro(mut makro) => {
                     makro.rename(name.clone());
@@ -1622,7 +1631,7 @@ impl Continuation {
                 let k = Value::Continuation(next.clone());
                 // val is lambda
                 apply(val, list!(k), next)
-            },
+            }
             Continuation::Return => Ok(Trampoline::Off(val)),
         }
     }
@@ -1705,12 +1714,10 @@ fn gensym(s: &String) -> String {
 }
 
 fn matcher_bound_contains(matcher: &Matcher, s: &String) -> bool {
-    matcher.values().any(|i|
-        match i {
-            RepValue::Val(ref v) => v.is_symbol_with(s.as_str()),
-            RepValue::Repeated(ref v) => v.iter().any(|x| x.is_symbol_with(s.as_str())),
-        }
-    )
+    matcher.values().any(|i| match i {
+        RepValue::Val(ref v) => v.is_symbol_with(s.as_str()),
+        RepValue::Repeated(ref v) => v.iter().any(|x| x.is_symbol_with(s.as_str())),
+    })
 }
 
 // actually, each pattern is transformed into **one** s-exp
@@ -2414,11 +2421,11 @@ pub fn process(ast: &List<AstNode>, env: Rc<RefCell<Env>>) -> Result<Value, Runt
 pub fn exec(prog: &str) -> Result<Value, RuntimeError> {
     let tokens = Lexer::tokenize(prog).unwrap();
     let tree = Parser::parse(&tokens).unwrap();
-    
+
     let env = Env::root();
     let prog = r#"(load "stdlib/prologue.ss")"#;
     prologue(prog, env.clone());
-    
+
     process(&tree, env)
 }
 
@@ -2426,14 +2433,16 @@ pub fn exec_args(prog: &str, args: Vec<String>) -> Result<Value, RuntimeError> {
     let tokens = Lexer::tokenize(prog).unwrap();
     let tree = Parser::parse(&tokens).unwrap();
     let env = Env::root();
-    let scm_args = args.into_iter()
+    let scm_args = args
+        .into_iter()
         .map(|x| Value::Symbol(x))
         .collect::<List<Value>>();
-    env.borrow_mut().define(String::from(ARGV), Value::from_list(scm_args));
-    
+    env.borrow_mut()
+        .define(String::from(ARGV), Value::from_list(scm_args));
+
     let prog = r#"(load "stdlib/prologue.ss")"#;
     prologue(prog, env.clone());
-    
+
     process(&tree, env)
 }
 

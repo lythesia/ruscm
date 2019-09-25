@@ -1,16 +1,11 @@
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
-use rustyline::{
-    line_buffer::LineBuffer,
-    Context,
-    Result,
-    completion::Completer,
-};
 use memchr::memchr;
+use rustyline::{completion::Completer, line_buffer::LineBuffer, Context, Result};
 use strum::IntoEnumIterator; // strum iter
 
-use crate::interpreter::{SpecialForm, Env};
+use crate::interpreter::{Env, SpecialForm};
 
 pub struct ReplCompleter {
     break_chars: &'static [u8],
@@ -18,13 +13,16 @@ pub struct ReplCompleter {
 }
 
 const DEFAULT_BREAK_CHARS: [u8; 17] = [
-    b' ', b'\t', b'\n', b'"', b'\\', b'\'', b'`', b'@', b',', b';',
-    b'{', b'}', b'[', b']', b'(', b')', b'\0',
+    b' ', b'\t', b'\n', b'"', b'\\', b'\'', b'`', b'@', b',', b';', b'{', b'}', b'[', b']', b'(',
+    b')', b'\0',
 ];
 
 impl ReplCompleter {
     pub fn new(env: Rc<RefCell<Env>>) -> ReplCompleter {
-        ReplCompleter { break_chars: &DEFAULT_BREAK_CHARS, env }
+        ReplCompleter {
+            break_chars: &DEFAULT_BREAK_CHARS,
+            env,
+        }
     }
 }
 
@@ -65,23 +63,19 @@ fn unclosing_quote(s: &str) -> bool {
             }
         };
     }
-    
+
     match mode {
         ScanMode::DoubleQuote | ScanMode::EscapeInDoubleQuote => true,
         _ => false,
     }
 }
 
-fn extract_symbol<'l>(
-    line: &'l str,
-    pos: usize,
-    break_chars: &[u8],
-) -> (usize, &'l str) {
+fn extract_symbol<'l>(line: &'l str, pos: usize, break_chars: &[u8]) -> (usize, &'l str) {
     let line = &line[..pos];
     if line.is_empty() {
         return (0, line);
     }
-    
+
     let mut start = None;
     for (i, c) in line.char_indices().rev() {
         if memchr(c as u8, break_chars).is_some() {
@@ -89,7 +83,7 @@ fn extract_symbol<'l>(
             break;
         }
     }
-    
+
     match start {
         Some(start) => (start, &line[start..]),
         None => (0, line),
@@ -98,8 +92,13 @@ fn extract_symbol<'l>(
 
 impl Completer for ReplCompleter {
     type Candidate = String;
-    
-    fn complete(&self, line: &str, pos: usize, _: &Context<'_>) -> Result<(usize, Vec<Self::Candidate>)> {
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _: &Context<'_>,
+    ) -> Result<(usize, Vec<Self::Candidate>)> {
         if unclosing_quote(line) {
             Ok((0, Vec::with_capacity(0)))
         } else {
@@ -107,7 +106,9 @@ impl Completer for ReplCompleter {
             let mut specials: Vec<String> = SpecialForm::iter().map(|v| v.to_string()).collect();
             // TODO: extras
             specials.push("call-with-current-continuation".to_string());
-            let env_symbols = self.env.borrow()
+            let env_symbols = self
+                .env
+                .borrow()
                 .values()
                 .keys()
                 .chain(specials.iter())

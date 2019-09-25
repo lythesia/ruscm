@@ -1,13 +1,10 @@
 extern crate ruscm;
 
+use ruscm::{interpreter, repl::Repl};
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use structopt::StructOpt;
-use ruscm::{
-    interpreter,
-    repl::Repl
-};
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "ruscm")]
@@ -27,24 +24,19 @@ fn main() {
     match opt.expr {
         Some(expr) => {
             interpreter::exec(expr.as_str()).map_err(|e| eprintln!("{}", e));
-        },
-        _ => {
-            match opt.script {
-                Some(script) => {
-                    match fs::OpenOptions::new().read(true).open(&script) {
-                        Ok(mut file) => {
-                            let mut src = String::new();
-                            file.read_to_string(&mut src);
-                            interpreter::exec_args(src.as_str(), opt.args)
-                                .map_err(|e| eprintln!("{}", e));
-                        }
-                        Err(e) => eprintln!("open `{}' failed: {}", script.display(), e),
-                    }
-                },
-                _ => {
-                    let mut repl = Repl::new();
-                    repl.run();
-                },
+        }
+        _ => match opt.script {
+            Some(script) => match fs::OpenOptions::new().read(true).open(&script) {
+                Ok(mut file) => {
+                    let mut src = String::new();
+                    file.read_to_string(&mut src);
+                    interpreter::exec_args(src.as_str(), opt.args).map_err(|e| eprintln!("{}", e));
+                }
+                Err(e) => eprintln!("open `{}' failed: {}", script.display(), e),
+            },
+            _ => {
+                let mut repl = Repl::new();
+                repl.run();
             }
         },
     }
