@@ -90,14 +90,42 @@
        (let* ((name2 val2) ...)
          body1 body2 ...)))))
 
+; (define-syntax letrec
+;   (syntax-rules ()
+;     ((_ ((name val) ...) body1 body2 ...)
+;      (let ((name #f) ...)
+;        (set! name val) ...
+;        (let ()
+;          body1
+;          body2 ...)))))
 (define-syntax letrec
-  (syntax-rules ()
-    ((_ ((name val) ...) body1 body2 ...)
-     (let ((name #f) ...)
-       (set! name val) ...
-       (let ()
-         body1
-         body2 ...)))))
+    (syntax-rules ()
+      ((letrec ((var1 init1) ...) body ...)
+       (letrec "generate_temp_names"
+         (var1 ...)
+         ()
+         ((var1 init1) ...)
+         body ...))
+      ((letrec "generate_temp_names"
+         ()
+         (temp1 ...)
+         ((var1 init1) ...)
+         body ...)                         ; start the changed code
+       (let ((var1 #f) ...)
+         (let ((temp1 init1) ...)
+           (set! var1 temp1)
+           ...
+           body ...)))
+      ((letrec "generate_temp_names"
+         (x y ...)
+         (temp ...)
+         ((var1 init1) ...)
+         body ...)
+       (letrec "generate_temp_names"
+         (y ...)
+         (newtemp temp ...)
+         ((var1 init1) ...)
+         body ...))))
 
 ; letrec
 ; (letrec
