@@ -416,14 +416,14 @@ impl Display for Value {
                     write!(f, "({} . {})", v.0.borrow(), v.1.borrow())
                 }
             }
-            Value::DatumList(ref v) => write!(f, "#ast{}", v),
+            Value::DatumList(ref v) => write!(f, "{}", v),
             Value::SpecialForm(ref v) => write!(f, "#<special form: {}>", v.to_string()),
             Value::Primitive(ref v) => write!(f, "#<primitive procedure: {}>", v),
             Value::Procedure(ref v, _, _) => write!(f, "#<procedure: [{}]>", v.join(", ")),
             Value::Macro(ref v) => write!(f, "#<macro: {}>", v.name),
             Value::Continuation(_) => write!(f, "#<continuation>"),
-            Value::VarValue(ref v) => write!(f, "v#{} ...", v),
-            Value::VarList(ref v) => write!(f, "vl#{} ...", v),
+            Value::VarValue(ref v) => write!(f, "{} ...", v),
+            Value::VarList(ref v) => write!(f, "{} ...", v),
         }
     }
 }
@@ -453,6 +453,8 @@ impl Debug for Value {
                 }
             }
             Value::DatumList(ref v) => write!(f, "#ast{:?}", v),
+            Value::VarValue(ref v) => write!(f, "v#{} ...", v),
+            Value::VarList(ref v) => write!(f, "vl#{} ...", v),
             _ => write!(f, "{}", self),
         }
     }
@@ -797,6 +799,7 @@ impl Env {
             "-",
             "*",
             "/",
+            "modulo",
             "=",
             "<",
             ">",
@@ -1387,10 +1390,14 @@ impl Continuation {
                             }
                             // (macro-expand macro ...)
                             SpecialForm::MacroExpand => {
-                                let (m, input) = shift_or_error!(
-                                    operands,
-                                    "bad macro-expand form: at least 1 argument expect"
-                                );
+                                if operands.len() != 1 {
+                                    runtime_error!("bad macro-expand form: exact 1 arg expected");
+                                }
+                                let mexp = operands.unpack1()?;
+                                if !mexp.is_ast_list() {
+                                    runtime_error!("bad macro-expand form: expect macro apply");
+                                }
+                                let (m, input) = mexp.from_ast_list()?.shift().unwrap();
                                 Ok(Trampoline::Bounce(
                                     m,
                                     env.clone(),
@@ -1887,6 +1894,7 @@ fn call_primitive(f: &str, args: List<Value>) -> Result<Value, RuntimeError> {
         "-" => call_primitive_arithmetic(args, f, primitive_minus_i, primitive_minus_f),
         "*" => call_primitive_arithmetic(args, f, primitive_mul_i, primitive_mul_f),
         "/" => call_primitive_arithmetic(args, f, primitive_div_i, primitive_div_f),
+        "modulo" => primitive_mod(args),
         "=" => call_primitive_arithmetic(args, f, primitive_eq_i, primitive_eq_f),
         "zero?" => {
             call_primitive_predicate(args, f, |v| v.is_integer_with(0) || v.is_float_with(0.0))
@@ -2094,6 +2102,20 @@ fn primitive_div_f(args: List<Value>) -> Result<Value, RuntimeError> {
     let r = x.as_float()? / y.as_float()?;
     Ok(Value::Float(r))
 }
+fn primitive_mod(args: List<Value>) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        runtime_error!(
+            "wrong number of args to `/': 2 expected, {} got",
+            args.len()
+        )
+    }
+    if !all_of!(args, is_integer) {
+        runtime_error!("wrong type of args to `modulo': {:?}", args)
+    }
+    let (x, y) = args.unpack2()?;
+    let r = x.as_integer()? % y.as_integer()?;
+    Ok(Value::Integer(r))
+}
 fn compare_numeric<T, F, H>(args: List<Value>, f: &str, op: F, tr: H) -> Result<Value, RuntimeError>
 where
     F: Fn(T, T) -> bool,
@@ -2199,6 +2221,9 @@ fn primitive_eqv(args: List<Value>) -> Result<Value, RuntimeError> {
     } else if all_of!(args, is_integer) {
         let (x, y) = args.unpack2()?;
         Ok(Value::Boolean(x.as_integer()? == y.as_integer()?))
+    } else if all_of!(args, is_float) {
+        let (x, y) = args.unpack2()?;
+        Ok(Value::Boolean(x.as_float()? == y.as_float()?))
     } else if all_of!(args, is_char) {
         let (x, y) = args.unpack2()?;
         Ok(Value::Boolean(x.as_char()? == y.as_char()?))
