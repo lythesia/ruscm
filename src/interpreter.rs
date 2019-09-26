@@ -331,7 +331,7 @@ impl Macro {
             .partition(|(_, _, m)| m == &Match::Best);
         if bests.is_empty() && normals.is_empty() {
             runtime_error!(
-                "failed to match any pattern in #<macro: {}>: {:?}",
+                "failed to match any pattern in #<macro: {}>: {}",
                 self.name,
                 input
             );
@@ -421,7 +421,7 @@ impl Display for Value {
             Value::DatumList(ref v) => write!(f, "{}", v),
             Value::SpecialForm(ref v) => write!(f, "#<special form: {}>", v.to_string()),
             Value::Primitive(ref v) => write!(f, "#<primitive procedure: {}>", v),
-            Value::Procedure(ref v, _, _) => write!(f, "#<procedure: [{}]>", v.join(", ")),
+            Value::Procedure(ref v, _, _) => write!(f, "#<procedure: [{}]>", v.join(" ")),
             Value::Macro(ref v) => write!(f, "#<macro: {}>", v.name),
             Value::Continuation(_) => write!(f, "#<continuation>"),
             Value::Environment(_) => write!(f, "#<environment>"),
@@ -952,7 +952,14 @@ pub enum Continuation {
         Rc<RefCell<Env>>,
         Box<Continuation>,
     ),
-    EvaluateApplyArgs(Value, Rc<RefCell<Env>>, Box<Continuation>),
+    EvaluateApplyArgs(List<Value>, Rc<RefCell<Env>>, Box<Continuation>),
+    ContinueEvaluateApplyArgs(
+        Value,       // proc
+        List<Value>, // rest exprs
+        List<Value>, // evaluated args
+        Rc<RefCell<Env>>,
+        Box<Continuation>,
+    ),
     ExecuteApply(
         Value, // proc
         Box<Continuation>,
@@ -1060,7 +1067,7 @@ impl Continuation {
                             SpecialForm::Define => {
                                 let (car, cdr) = shift_or_error!(
                                     operands,
-                                    "bad define form: at least two arguments"
+                                    "bad define form: at least 2 arguments"
                                 );
                                 match car {
                                     Value::Symbol(var_name) => {
@@ -1176,7 +1183,7 @@ impl Continuation {
                             SpecialForm::Begin => {
                                 let (car, cdr) = shift_or_error!(
                                     operands,
-                                    "bad begin form: at least one statement"
+                                    "bad begin form: at least 1 statement"
                                 );
                                 Ok(Trampoline::Bounce(
                                     car,
@@ -1184,15 +1191,15 @@ impl Continuation {
                                     Continuation::EvaluateExpressions(cdr, env, next),
                                 ))
                             }
-                            // (apply proc args-as-list)
+                            // (apply proc arg1 ... args) last args is lst
                             SpecialForm::Apply => {
-                                if operands.len() != 2 {
+                                if operands.len() < 2 {
                                     runtime_error!(
-                                        "bad apply form: 2 arguments expected, {} got",
+                                        "bad apply form: at least 2 arguments expected, {} got",
                                         operands.len()
                                     );
                                 }
-                                let (op, args) = operands.unpack2()?;
+                                let (op, args) = operands.shift().unwrap();
                                 // now we need to eval op
                                 Ok(Trampoline::Bounce(
                                     op,
@@ -1411,7 +1418,7 @@ impl Continuation {
                             // (macro-expand (macro ...))
                             SpecialForm::MacroExpand => {
                                 if operands.len() != 1 {
-                                    runtime_error!("bad macro-expand form: exact 1 arg expected");
+                                    runtime_error!("bad macro-expand form: exact 1 argument expected");
                                 }
                                 let mexp = operands.unpack1()?;
                                 if !mexp.is_ast_list() {
@@ -1544,12 +1551,44 @@ impl Continuation {
                     _ => apply(f, acc, next),
                 }
             }
-            Continuation::EvaluateApplyArgs(args, env, next) => Ok(Trampoline::Bounce(
-                args,
-                env,
-                Continuation::ExecuteApply(val, next),
-            )),
             Continuation::ExecuteApply(f, next) => apply(f, val.to_list()?, next),
+            Continuation::EvaluateApplyArgs(args, env, next) => {
+                if !val.is_procedure() {
+                    runtime_error!("bad apply form: don't know how to apply {:?}", val);
+                }
+                match args.shift() {
+                    Some((car, cdr)) => Ok(Trampoline::Bounce(
+                        car,
+                        env.clone(),
+                        Continuation::ContinueEvaluateApplyArgs(val, cdr, List::Nil, env, next),
+                    )),
+                    _ => runtime_error!("bad apply form: must provide arguments as list"),
+                }
+            },
+            Continuation::ContinueEvaluateApplyArgs(f, rest, args, env, next) => {
+                match rest.shift() {
+                    Some((car, cdr)) => {
+                        let acc = args.unshift_r(val);
+                        Ok(Trampoline::Bounce(
+                            car,
+                            env.clone(),
+                            Continuation::ContinueEvaluateApplyArgs(f, cdr, acc, env, next),
+                        ))
+                    },
+                    _ => {
+                        if val.is_list() {
+                            let new_args: List<Value> = val.iter()
+                                .fold(args, |acc, v| {
+                                    let x = v.borrow().clone();
+                                    acc.unshift_r(x)
+                                });
+                            apply(f, new_args, next)
+                        } else {
+                            runtime_error!("bad apply form: last of arg list must be list {:?}", val);
+                        }
+                    },
+                }
+            },
             Continuation::ExecuteEval(env, next) => {
                 Ok(Trampoline::Bounce(val.to_ast_list(), env, *next))
             }
@@ -1877,7 +1916,7 @@ fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampol
     let ff = format!("{:?}", f);
     match f {
         Value::Procedure(params, body, env) => {
-            //println!("apply proc: {:?} with {:?}", params, args);
+//            println!("apply proc: {:?} with {:?}", params, args);
             let dot = ".".to_string();
             let new_env = Env::derive(env);
             // params verified
@@ -1888,15 +1927,16 @@ fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampol
                 let mut i = norm.into_iter();
                 let mut j = args.into_iter();
                 loop {
-                    match (i.next(), j.next()) {
-                        (Some(x), Some(y)) => new_env.borrow_mut().define(x.clone(), y),
-                        (Some(_), None) => {
-                            runtime_error!("not enough arguments to procedure: {}", ff)
-                        }
+                    match i.next() {
+                        Some(x) => match j.next() {
+                            Some(y) => new_env.borrow_mut().define(x.clone(), y),
+                            _ => runtime_error!("not enough arguments to procedure: {}", ff),
+                        },
                         _ => break,
                     }
                 }
                 let rest_args = j.collect::<List<Value>>();
+//                println!("rest_args: {:?}", rest_args);
                 new_env
                     .borrow_mut()
                     .define(rest.clone(), Value::from_list(rest_args));
@@ -1913,6 +1953,9 @@ fn apply(f: Value, args: List<Value>, next: Box<Continuation>) -> Result<Trampol
                     }
                 }
             }
+//            for (k,v) in new_env.borrow().values().iter() {
+//                println!("new_env {} => {:?}", k, v);
+//            }
             eval_expressions(body, new_env, next)
         }
         Value::Primitive(n) => {

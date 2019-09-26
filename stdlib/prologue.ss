@@ -66,19 +66,29 @@
 (define (not x)      (if x #f #t))
 
 ; let and named let (using the Y-combinator):
+; (define-syntax let
+;   (syntax-rules ()
+;     ((_ ((x v) ...) e1 e2 ...)
+;      ((lambda (x ...) e1 e2 ...) v ...))
+;     ((_ name ((x v) ...) e1 e2 ...)
+;      (let*
+;        ((f  (lambda (name)
+;               (lambda (x ...) e1 e2 ...)))
+;         (ff ((lambda (proc) (f (lambda (x ...) ((proc proc))))
+;                x ...)
+;              (lambda (proc) (f (lambda (x ...) ((proc proc))))
+;                x ...)))
+;         (ff v ...))))))
 (define-syntax let
-  (syntax-rules ()
-    ((_ ((x v) ...) e1 e2 ...)
-     ((lambda (x ...) e1 e2 ...) v ...))
-    ((_ name ((x v) ...) e1 e2 ...)
-     (let*
-       ((f  (lambda (name)
-              (lambda (x ...) e1 e2 ...)))
-        (ff ((lambda (proc) (f (lambda (x ...) ((proc proc))))
-               x ...)
-             (lambda (proc) (f (lambda (x ...) ((proc proc))))
-               x ...)))
-        (ff v ...))))))
+ (syntax-rules ()
+  ((let ((name val) ...) body1 body2 ...)
+   ((lambda (name ...) body1 body2 ...)
+    val ...))
+  ((let tag ((name val) ...) body1 body2 ...)
+   ((letrec ((tag (lambda (name ...)
+                   body1 body2 ...)))
+     tag)
+    val ...))))
 
 (define-syntax let*
   (syntax-rules ()
@@ -204,6 +214,27 @@
 
 (define (length lst)    (foldl (lambda (x y) (+ y 1)) 0 lst))
 (define (reverse lst)   (foldl (flip cons) '() lst))
+
+(define (some? f l)
+  (and (pair? l)
+       (or (f (car l))
+           (some? f (cdr l)))))
+(define (every? f l)
+  (and (pair? l)
+       (and (f (car l))
+            (every? f (cdr l)))))
+
+(define (map f l . more)
+  (define (map1 f l)
+    (if (null? l)
+        '()
+        (cons (f (car l)) (map f (cdr l)))))
+  (let ((lst (cons l more)))
+    (if (some? null? lst)
+        '()
+        (cons
+          (apply f (map1 car lst))
+          (apply map f (map1 cdr lst))))))
 
 (define (foldr func end lst)
   (if (null? lst)
