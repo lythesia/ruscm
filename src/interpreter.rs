@@ -106,6 +106,7 @@ pub enum SpecialForm {
     CommandLine,
     #[strum(serialize = "current-environment")]
     CurrentEnvironment,
+    Format,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -981,6 +982,14 @@ pub enum Continuation {
     ),
     ExecuteMacroExpand(List<Value>, Rc<RefCell<Env>>, Box<Continuation>),
     ExecuteCallCC(Box<Continuation>),
+    EvaluateFormatArgs(List<Value>, Rc<RefCell<Env>>, Box<Continuation>),
+    ContinueEvaluateFormatArgs(
+        String,      // fmt string
+        List<Value>, // rest exprs
+        List<Value>, // evaluated args
+        Rc<RefCell<Env>>,
+        Box<Continuation>,
+    ),
 }
 
 // (p1 p2 . p3)
@@ -1206,7 +1215,7 @@ impl Continuation {
                                     env.clone(),
                                     Continuation::EvaluateApplyArgs(args, env, next),
                                 ))
-                            }
+                            },
                             // (eval expr [env])
                             SpecialForm::Eval => {
                                 if operands.len() < 1 {
@@ -1500,6 +1509,21 @@ impl Continuation {
                                 }
                                 Ok(Trampoline::Value(Value::Environment(env), *next))
                             }
+                            SpecialForm::Format => {
+                                if operands.len() < 1 {
+                                    runtime_error!(
+                                        "bad format form: at least 1 arguments expected, {} got",
+                                        operands.len()
+                                    );
+                                }
+                                let (fmt, args) = operands.shift().unwrap();
+                                // now we need to eval op
+                                Ok(Trampoline::Bounce(
+                                    fmt,
+                                    env.clone(),
+                                    Continuation::EvaluateFormatArgs(args, env, next),
+                                ))
+                            },
                             _ => Ok(Trampoline::Value(Value::Unspecified, *next)),
                         }
                     }
@@ -1670,9 +1694,53 @@ impl Continuation {
                 let k = Value::Continuation(next.clone());
                 // val is lambda
                 apply(val, list!(k), next)
-            }
+            },
+            Continuation::EvaluateFormatArgs(args, env, next) => {
+                match val {
+                    Value::String(fmt) => {
+                        match args.shift() {
+                            Some((car, cdr)) => Ok(Trampoline::Bounce(
+                                car,
+                                env.clone(),
+                                Continuation::ContinueEvaluateFormatArgs(fmt, cdr, List::Nil, env, next),
+                            )),
+                            _ => Ok(Trampoline::Value(format(fmt, List::Nil)?, *next)),
+                        }
+                    },
+                    _ => runtime_error!("bad format form: 1st argument must be string {:?}", val),
+                }
+            },
+            Continuation::ContinueEvaluateFormatArgs(fmt, rest, args, env, next) => {
+                let acc = args.unshift_r(val);
+                match rest.shift() {
+                    Some((car, cdr)) => {
+                        Ok(Trampoline::Bounce(
+                            car,
+                            env.clone(),
+                            Continuation::ContinueEvaluateFormatArgs(fmt, cdr, acc, env, next),
+                        ))
+                    },
+                    _ => Ok(Trampoline::Value(format(fmt, acc)?, *next)),
+                }
+            },
             Continuation::Return => Ok(Trampoline::Off(val)),
         }
+    }
+}
+
+fn format(fmt: String, args: List<Value>) -> Result<Value, RuntimeError> {
+    let mut fmt = fmt;
+    let vars = args.into_iter().enumerate().map(|(i, x)| {
+        let r = format!("arg{}", i);
+        fmt = fmt.replacen("{}", format!("{{{}}}", r).as_str(), 1);
+        (r, format!("{}", x))
+    }).collect::<HashMap<String, String>>();
+    
+    if fmt.contains("{}") {
+        runtime_error!("bad format form: values not formatted {:?}", fmt)
+    } else {
+        let s = strfmt::strfmt(&fmt, &vars).unwrap();
+        Ok(Value::String(s))
     }
 }
 
