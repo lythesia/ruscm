@@ -215,14 +215,16 @@
 (define (length lst)    (foldl (lambda (x y) (+ y 1)) 0 lst))
 (define (reverse lst)   (foldl (flip cons) '() lst))
 
-(define (some? f l)
-  (and (pair? l)
-       (or (f (car l))
-           (some? f (cdr l)))))
+(define (exist? f l)
+  (cond
+    ((null? l) #f)
+    ((f (car l)) #t)
+    (else (exist? f (cdr l)))))
 (define (every? f l)
-  (and (pair? l)
-       (and (f (car l))
-            (every? f (cdr l)))))
+  (cond
+    ((null? l) #t)
+    ((f (car l)) (every? f (cdr l)))
+    (else #f)))
 
 (define (map f l . more)
   (define (map1 f l)
@@ -230,7 +232,7 @@
         '()
         (cons (f (car l)) (map f (cdr l)))))
   (let ((lst (cons l more)))
-    (if (some? null? lst)
+    (if (exist? null? lst)
         '()
         (cons
           (apply f (map1 car lst))

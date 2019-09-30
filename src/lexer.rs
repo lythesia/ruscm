@@ -124,27 +124,37 @@ impl<'a> Lexer<'a> {
                 _ if c.is_whitespace() => {
                     self.advance();
                     Ok(())
-                }
+                },
                 '(' => {
                     self.push_token(Token::LPAREN);
                     self.advance();
                     Ok(())
-                }
+                },
                 ')' => {
                     self.push_token(Token::RPAREN);
                     self.advance();
                     Ok(())
-                }
+                },
+                '[' => {
+                    self.push_token(Token::LBRACK);
+                    self.advance();
+                    Ok(())
+                },
+                ']' => {
+                    self.push_token(Token::RBRACK);
+                    self.advance();
+                    Ok(())
+                },
                 '"' => {
                     let s = self.parse_string()?;
                     self.push_token(Token::STRING(s));
                     self.advance();
                     Ok(())
-                }
+                },
                 ';' => {
                     self.parse_comment()?;
                     Ok(())
-                }
+                },
                 _ => lex_error!(self, "unexpected character: `{}', looking for delimiter", c),
             },
             _ => Ok(()),
